@@ -15,6 +15,8 @@ This repository patches JetBrains AI only for environment-correct Codex runtime 
 - Invoke WSL with an explicit distribution and non-root user after discovery. Avoid shell-quoted command strings when direct argv is sufficient.
 - Share the newest `auth.json` across Windows and WSL. Keep `config.toml` platform-specific and synchronize it only within the same platform.
 - Keep installation idempotent, produce machine-readable status, and preserve a verified rollback path.
+- Treat `account/rateLimits/read` as the usage-limit source of truth. Never scrape SQLite, WAL, text logs, or UI strings for current quota values.
+- Model quota windows and buckets dynamically from the app-server response. Do not assume that every plan has both 5-hour and weekly windows or hardcode a single special model.
 
 ## Update Workflow
 
@@ -24,6 +26,7 @@ This repository patches JetBrains AI only for environment-correct Codex runtime 
 4. Run `scripts/test.ps1` and the build test against the clean plugin tree.
 5. Install with the IDE stopped, start the IDE, and verify the actual runtime path in `idea.log`.
 6. Update `VERSION`, `CHANGELOG.md`, compatibility docs, and runtime lock when applicable.
+7. After live verification, commit and publish `main` plus `jbai-<plugin-version>-patch-<patch-version>` tags with `scripts/release.ps1`.
 
 ## Verification
 

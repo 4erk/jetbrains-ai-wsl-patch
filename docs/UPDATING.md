@@ -40,6 +40,8 @@
 - при необходимости обновите `runtime.lock.json` отдельной командой;
 - не добавляйте plugin ZIP, JAR, runtime downloads или `.state`.
 
+Release tag имеет форму `jbai-<plugin-version>-patch-<patch-version>`, например `jbai-261.25134.237-patch-1.1.0`. После успешной live-проверки commit и tag публикуются командой `scripts/release.ps1`.
+
 ## 5. Установить и проверить
 
 Закройте IDE и выполните `scripts/install.ps1`. После запуска IDE проверьте:
@@ -49,7 +51,7 @@
 3. WSL project запускает Linux runtime с правильным distro/user.
 4. В `idea.log` нет Windows command для WSL ACP launch.
 5. Ссылка `/home/.../file` открывает WSL VirtualFile.
-6. Лимиты берутся из активной среды и переключаются для Spark.
+6. `jetbrains-rate-limits.json` обновляется не реже чем раз в 20 секунд, stale SQLite values не используются, bucket меняется вместе с выбранной моделью.
 7. В логе нет `NoClassDefFoundError`, `VerifyError` или plugin load errors.
 
 Только после фактической проверки создавайте release tag.

@@ -24,7 +24,13 @@
   },
   "acp": {
     "package": "@agentclientprotocol/codex-acp",
-    "version": "1.1.2"
+    "version": "1.1.2",
+    "rateLimitBridge": {
+      "snapshotFile": "jetbrains-rate-limits.json",
+      "refreshSeconds": 20,
+      "cleanSha256": "D05351BC8C47367969A340AC92B013F6FDCE538CDF89F38EC046847BD6C2EF84",
+      "patchedSha256": "B1AC86366055A87D5498AD40DD85DF1FC627BE5C4230F6456F960A6BB42AFBFB"
+    }
   },
   "node": {
     "minimumMajor": 20,

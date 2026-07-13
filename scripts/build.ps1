@@ -154,12 +154,21 @@ foreach ($target in $targets) {
 }
 
 if ($UpdatePatchedHashes) {
-    $compat | Add-Member -NotePropertyName patchVersion -NotePropertyValue $patchVersion -Force
+    $manifestText = [IO.File]::ReadAllText($CompatibilityManifest)
     foreach ($target in $targets) {
         $relative = [string]$target.Jar.path
-        $target.Jar | Add-Member -NotePropertyName patchedSha256 -NotePropertyValue $report.jars[$relative].patchedSha256 -Force
+        $oldHash = [string]$target.Jar.patchedSha256
+        $newHash = [string]$report.jars[$relative].patchedSha256
+        if (-not $oldHash) {
+            throw "Compatibility manifest is missing patchedSha256 for $relative."
+        }
+        if ($manifestText.IndexOf($oldHash, [StringComparison]::Ordinal) -lt 0 -or
+            $manifestText.IndexOf($oldHash, [StringComparison]::Ordinal) -ne $manifestText.LastIndexOf($oldHash, [StringComparison]::Ordinal)) {
+            throw "Expected exactly one existing patched hash for $relative."
+        }
+        $manifestText = $manifestText.Replace($oldHash, $newHash)
     }
-    [IO.File]::WriteAllLines($CompatibilityManifest, @(($compat | ConvertTo-Json -Depth 12)), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($CompatibilityManifest, $manifestText, [Text.UTF8Encoding]::new($false))
 }
 
 $reportPath = Join-Path $outputRootPath 'patch-report.json'

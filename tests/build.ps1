@@ -30,4 +30,33 @@ foreach ($item in $expected) {
         throw "Patcher did not change $($item[0])."
     }
 }
+
+$repoRoot = Get-RepositoryRoot
+$javac = Join-Path $IdeHome 'jbr\bin\javac.exe'
+$java = Join-Path $IdeHome 'jbr\bin\java.exe'
+$testClasses = Join-Path $repoRoot '.build\classes\test'
+Remove-Item -LiteralPath $testClasses -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $testClasses -Force | Out-Null
+$testSource = Join-Path $repoRoot 'tests\java\com\intellij\ml\llm\core\chat\ui\chat\CodexUsageLimitPatchSupportTest.java'
+$classpath = @(
+    (Join-Path $repoRoot '.build\classes\main')
+    (Join-Path $PluginRoot 'lib\*')
+    (Join-Path $PluginRoot 'lib\modules\*')
+    (Join-Path $IdeHome 'lib\*')
+) -join ';'
+$testArgs = Join-Path $repoRoot '.build\javac-test.args'
+[IO.File]::WriteAllLines($testArgs, @(
+    '-encoding', 'UTF-8',
+    '-cp', ('"{0}"' -f $classpath.Replace('\', '/')),
+    '-d', ('"{0}"' -f $testClasses.Replace('\', '/')),
+    ('"{0}"' -f $testSource.Replace('\', '/'))
+), [Text.UTF8Encoding]::new($false))
+& $javac "@$testArgs"
+if ($LASTEXITCODE -ne 0) {
+    throw "Usage-limit parser test compilation failed with exit code $LASTEXITCODE"
+}
+& $java -cp "$testClasses;$classpath" com.intellij.ml.llm.core.chat.ui.chat.CodexUsageLimitPatchSupportTest
+if ($LASTEXITCODE -ne 0) {
+    throw "Usage-limit parser tests failed with exit code $LASTEXITCODE"
+}
 Write-Output 'Build test passed.'

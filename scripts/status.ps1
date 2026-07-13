@@ -45,6 +45,55 @@ function Invoke-WslVersion {
     }
 }
 
+function Invoke-WslSha256 {
+    param(
+        [Parameter(Mandatory)]$Wsl,
+        [string]$Path
+    )
+    if (-not $Path) {
+        return $null
+    }
+    try {
+        return ((& wsl.exe -d $Wsl.Distribution -u $Wsl.User -- sha256sum $Path 2>$null) -split '\s+')[0].ToUpperInvariant()
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-RateLimitSnapshotStatus {
+    param(
+        [string]$Path,
+        [string]$Json
+    )
+    $result = [ordered]@{
+        path = $Path
+        exists = $false
+        updatedAt = $null
+        ageSeconds = $null
+        buckets = @()
+    }
+    try {
+        if (-not $Json) {
+            if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+                return $result
+            }
+            $Json = Get-Content -LiteralPath $Path -Raw
+        }
+        $snapshot = $Json | ConvertFrom-Json
+        $result.exists = $true
+        $result.updatedAt = [long]$snapshot.updatedAt
+        $result.ageSeconds = [Math]::Max(0, [Math]::Floor(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $result.updatedAt) / 1000))
+        if ($snapshot.rateLimitsByLimitId) {
+            $result.buckets = @($snapshot.rateLimitsByLimitId.PSObject.Properties.Name)
+        }
+    }
+    catch {
+        $result['error'] = $_.Exception.Message
+    }
+    return $result
+}
+
 $repoRoot = Get-RepositoryRoot
 $context = Resolve-JetBrainsContext -IdeHome $IdeHome -Profile $Profile
 $lock = Get-Content -LiteralPath (Join-Path $repoRoot 'runtime.lock.json') -Raw | ConvertFrom-Json
@@ -123,11 +172,20 @@ $runtime = Read-KeyValueFile -Path $manifestPath
 $windowsNode = [string]$runtime['WINDOWS_NODE']
 $windowsAcp = [string]$runtime['WINDOWS_ACP_ENTRY']
 $windowsCodex = [string]$runtime['WINDOWS_CODEX']
+$windowsCodexHome = [string]$runtime['WINDOWS_CODEX_HOME']
+$windowsSnapshotPath = if ($windowsCodexHome) { Join-Path $windowsCodexHome ([string]$lock.acp.rateLimitBridge.snapshotFile) } else { $null }
+$windowsAcpHash = if ($windowsAcp -and (Test-Path -LiteralPath $windowsAcp -PathType Leaf)) { (Get-FileHash -LiteralPath $windowsAcp -Algorithm SHA256).Hash } else { $null }
 $windowsStatus = [ordered]@{
     node = Invoke-Version -Command $windowsNode -Arguments @('--version')
     acp = Invoke-Version -Command $windowsNode -Arguments @($windowsAcp, '--version')
     codex = Invoke-Version -Command $windowsCodex -Arguments @('--version')
-    codexHome = [string]$runtime['WINDOWS_CODEX_HOME']
+    codexHome = $windowsCodexHome
+    rateLimitBridge = [ordered]@{
+        sha256 = $windowsAcpHash
+        expectedSha256 = [string]$lock.acp.rateLimitBridge.patchedSha256
+        integrity = [bool]($windowsAcpHash -eq [string]$lock.acp.rateLimitBridge.patchedSha256)
+    }
+    rateLimitSnapshot = Get-RateLimitSnapshotStatus -Path $windowsSnapshotPath
 }
 
 $wslStatus = $null
@@ -137,13 +195,29 @@ if ($wsl) {
     $wslNode = [string]$runtime["${prefix}NODE"]
     $wslAcp = [string]$runtime["${prefix}ACP_ENTRY"]
     $wslCodex = [string]$runtime["${prefix}CODEX"]
+    $wslCodexHome = [string]$runtime["${prefix}CODEX_HOME"]
+    $wslSnapshotPath = "$wslCodexHome/$($lock.acp.rateLimitBridge.snapshotFile)"
+    $wslAcpHash = Invoke-WslSha256 -Wsl $wsl -Path $wslAcp
+    $wslSnapshotJson = $null
+    try {
+        $wslSnapshotJson = ((& wsl.exe -d $wsl.Distribution -u $wsl.User -- cat $wslSnapshotPath 2>$null) -join "`n")
+    }
+    catch {
+        $wslSnapshotJson = $null
+    }
     $wslStatus = [ordered]@{
         distribution = $wsl.Distribution
         user = $wsl.User
         node = Invoke-WslVersion -Wsl $wsl -Command $wslNode -Arguments @('--version')
         acp = Invoke-WslVersion -Wsl $wsl -Command $wslNode -Arguments @($wslAcp, '--version')
         codex = Invoke-WslVersion -Wsl $wsl -Command $wslCodex -Arguments @('--version')
-        codexHome = [string]$runtime["${prefix}CODEX_HOME"]
+        codexHome = $wslCodexHome
+        rateLimitBridge = [ordered]@{
+            sha256 = $wslAcpHash
+            expectedSha256 = [string]$lock.acp.rateLimitBridge.patchedSha256
+            integrity = [bool]($wslAcpHash -eq [string]$lock.acp.rateLimitBridge.patchedSha256)
+        }
+        rateLimitSnapshot = Get-RateLimitSnapshotStatus -Path $wslSnapshotPath -Json $wslSnapshotJson
     }
 }
 

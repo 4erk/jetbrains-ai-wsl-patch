@@ -38,7 +38,9 @@ Manifest содержит Windows paths и набор WSL paths с ключом,
 
 ## Usage telemetry
 
-Кнопка лимитов читает rate-limit events только из Codex home активной project environment. Windows и WSL telemetry не смешиваются. Обновление выполняется каждые 20 секунд; выбор Spark bucket зависит от фактически выбранной модели в UI.
+ACP bridge использует стабильный app-server RPC `account/rateLimits/read`. Сразу после ACP `initialize` и далее каждые 20 секунд он сохраняет полный response в `jetbrains-rate-limits.json` активного `CODEX_HOME`. Трансформация `codex-acp` привязана к clean/patched SHA-256 в `runtime.lock.json` и останавливается при неизвестном bundle.
+
+Java UI читает только этот JSON snapshot из Codex home активной project environment. Windows и WSL telemetry не смешиваются. Snapshot старше 75 секунд считается stale и скрывается, а не выдается за актуальный. Окна сортируются по `windowDurationMins`; именованные buckets сопоставляются с выбранной моделью по `limitName`, default bucket определяется по `limitId=codex`. SQLite/WAL не является API и больше не используется.
 
 ## Supply chain
 

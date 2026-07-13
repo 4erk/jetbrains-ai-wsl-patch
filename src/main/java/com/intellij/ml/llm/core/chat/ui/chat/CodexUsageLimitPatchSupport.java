@@ -1,24 +1,30 @@
 package com.intellij.ml.llm.core.chat.ui.chat;
 
-import com.intellij.ml.llm.core.chat.ui.chat.input.AIAssistantInput;
-import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.ide.impl.ProjectUtil;
+import com.intellij.ml.llm.core.chat.ui.chat.input.AIAssistantInput;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.util.ui.JBUI;
 import kotlinx.coroutines.flow.StateFlow;
 
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JProgressBar;
+import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
-import java.awt.GridBagConstraints;
-import java.awt.GridBagLayout;
 import java.awt.event.HierarchyEvent;
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -35,8 +41,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -46,17 +52,18 @@ import java.util.regex.Pattern;
 public final class CodexUsageLimitPatchSupport {
     private static final String INSTALLED_KEY = "codex.usage.limit.patch.installed";
     private static final String BUTTON_KEY = "codex.usage.limit.patch.button";
-    private static final String SPARK_KEY = "GPT-5.3-Codex-Spark";
-    private static final long REFRESH_MILLIS = 20_000L;
-    private static final int MAX_READ_BYTES = 8 * 1024 * 1024;
-    private static final DateTimeFormatter DATE_FORMAT =
-        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
+    private static final String SNAPSHOT_FILE = "jetbrains-rate-limits.json";
+    private static final long UI_REFRESH_MILLIS = 1_000L;
+    private static final long STALE_AFTER_MILLIS = 75_000L;
+    private static final int MAX_SNAPSHOT_BYTES = 1024 * 1024;
+    private static final DateTimeFormatter RESET_FORMAT =
+        DateTimeFormatter.ofPattern("MMM d, HH:mm").withZone(ZoneId.systemDefault());
     private static final ScheduledExecutorService EXECUTOR = Executors.newSingleThreadScheduledExecutor(task -> {
-        Thread thread = new Thread(task, "Codex Usage Limit Patch");
+        Thread thread = new Thread(task, "Codex Usage Limit UI");
         thread.setDaemon(true);
         return thread;
     });
-    private static final Map<String, RateLimitEvent> LAST_RATE_LIMIT_EVENTS = new ConcurrentHashMap<>();
+    private static final Map<Path, CachedRateLimitState> STATE_CACHE = new ConcurrentHashMap<>();
 
     private CodexUsageLimitPatchSupport() {}
 
@@ -69,14 +76,13 @@ public final class CodexUsageLimitPatchSupport {
         }
         feedbackPanel.putClientProperty(INSTALLED_KEY, Boolean.TRUE);
 
-        JButton limitButton = new JButton("--% / --% \u25BE");
+        JButton limitButton = new JButton("--% \u25BE");
         limitButton.setFocusable(false);
-        limitButton.setOpaque(false);
-        limitButton.setBorderPainted(false);
-        limitButton.setContentAreaFilled(false);
-        limitButton.setMargin(JBUI.insets(1, 4));
+        limitButton.setHorizontalAlignment(SwingConstants.CENTER);
+        limitButton.setMargin(JBUI.insets(1, 6));
         limitButton.putClientProperty("JButton.buttonType", "toolBarButton");
         limitButton.putClientProperty(BUTTON_KEY, Boolean.TRUE);
+        limitButton.getAccessibleContext().setAccessibleName("Codex usage limits");
 
         JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0));
         rightPanel.setOpaque(false);
@@ -97,12 +103,13 @@ public final class CodexUsageLimitPatchSupport {
         UsageButtonController controller = new UsageButtonController(limitButton, input);
         limitButton.addActionListener(event -> controller.showPopup());
         limitButton.addHierarchyListener(event -> {
-            if ((event.getChangeFlags() & HierarchyEvent.DISPLAYABILITY_CHANGED) != 0) {
-                if (limitButton.isDisplayable()) {
-                    controller.start();
-                } else {
-                    controller.stop();
-                }
+            if ((event.getChangeFlags() & HierarchyEvent.DISPLAYABILITY_CHANGED) == 0) {
+                return;
+            }
+            if (limitButton.isDisplayable()) {
+                controller.start();
+            } else {
+                controller.stop();
             }
         });
         controller.refreshOnce();
@@ -117,7 +124,7 @@ public final class CodexUsageLimitPatchSupport {
     private static final class UsageButtonController {
         private final JButton button;
         private final AIAssistantInput input;
-        private volatile Snapshot snapshot = Snapshot.unavailable("No Codex rate limit event found yet.");
+        private volatile Snapshot snapshot = Snapshot.unavailable("Waiting for Codex rate-limit data.");
         private volatile ScheduledFuture<?> future;
 
         private UsageButtonController(JButton button, AIAssistantInput input) {
@@ -129,7 +136,7 @@ public final class CodexUsageLimitPatchSupport {
             if (future != null && !future.isCancelled() && !future.isDone()) {
                 return;
             }
-            future = EXECUTOR.scheduleAtFixedRate(this::refreshSafely, 0L, REFRESH_MILLIS, TimeUnit.MILLISECONDS);
+            future = EXECUTOR.scheduleAtFixedRate(this::refreshSafely, 0L, UI_REFRESH_MILLIS, TimeUnit.MILLISECONDS);
         }
 
         private synchronized void stop() {
@@ -145,16 +152,12 @@ public final class CodexUsageLimitPatchSupport {
 
         private void refreshSafely() {
             try {
-                refresh();
+                String selectedModel = detectSelectedModel(input);
+                Snapshot next = loadSnapshot(selectedModel);
+                snapshot = next;
+                SwingUtilities.invokeLater(() -> applySnapshot(next));
             } catch (Throwable ignored) {
             }
-        }
-
-        private void refresh() {
-            String selectedModel = detectSelectedModel(input);
-            Snapshot next = loadSnapshot(selectedModel);
-            snapshot = next;
-            SwingUtilities.invokeLater(() -> applySnapshot(next));
         }
 
         private void applySnapshot(Snapshot next) {
@@ -163,23 +166,51 @@ public final class CodexUsageLimitPatchSupport {
         }
 
         private void showPopup() {
-            Snapshot current = snapshot.withFreshCountdowns();
-            JPanel panel = new JPanel(new GridBagLayout());
-            panel.setBorder(JBUI.Borders.empty(10, 12));
-            int row = 0;
-            addTitleRow(panel, row++, "Codex limits - " + current.bucketTitle());
+            Snapshot current = snapshot.refreshAge();
+            JPanel panel = new JPanel();
+            panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+            panel.setBorder(JBUI.Borders.empty(12, 14));
+
+            JLabel title = new JLabel("Codex usage");
+            title.setFont(title.getFont().deriveFont(Font.BOLD, title.getFont().getSize2D() + 1.0f));
+            title.setAlignmentX(Component.LEFT_ALIGNMENT);
+            panel.add(title);
+
             if (current.hasKnownModel()) {
-                addMessageRow(panel, row++, "Model: " + current.selectedModel);
+                JLabel context = secondaryLabel(current.modelLabel() + "  \u00B7  " + current.bucketLabel());
+                context.setBorder(JBUI.Borders.emptyTop(2));
+                panel.add(context);
             }
-            addHeaderRow(panel, row++);
-            addLimitRow(panel, row++, "5 hours", current.primary);
-            addLimitRow(panel, row++, "Week", current.secondary);
-            if (current.limitReached || !current.allowed) {
-                addMessageRow(panel, row++, "Limit reached for this bucket.");
+
+            panel.add(Box.createVerticalStrut(JBUI.scale(10)));
+            if (current.windows.isEmpty() || current.stale()) {
+                String message = current.stale() && current.updatedAtMillis > 0L
+                    ? "Waiting for a fresh Codex snapshot."
+                    : current.error == null ? "Rate-limit data is unavailable." : current.error;
+                JLabel unavailable = new JLabel(message);
+                unavailable.setAlignmentX(Component.LEFT_ALIGNMENT);
+                panel.add(unavailable);
+            } else {
+                for (int i = 0; i < current.windows.size(); i++) {
+                    if (i > 0) {
+                        panel.add(Box.createVerticalStrut(JBUI.scale(8)));
+                    }
+                    panel.add(createLimitCard(current.windows.get(i)));
+                }
             }
-            if (current.error != null && !current.error.isBlank()) {
-                addMessageRow(panel, row++, current.error);
+
+            if (current.limitReached) {
+                JLabel reached = new JLabel("This quota is exhausted.");
+                reached.setForeground(errorColor());
+                reached.setBorder(JBUI.Borders.emptyTop(9));
+                reached.setAlignmentX(Component.LEFT_ALIGNMENT);
+                panel.add(reached);
             }
+
+            JLabel freshness = secondaryLabel(current.freshnessText());
+            freshness.setBorder(JBUI.Borders.emptyTop(9));
+            panel.add(freshness);
+
             JBPopupFactory.getInstance()
                 .createComponentPopupBuilder(panel, panel)
                 .setRequestFocus(false)
@@ -190,91 +221,249 @@ public final class CodexUsageLimitPatchSupport {
         }
     }
 
-    private static void addTitleRow(JPanel panel, int row, String text) {
+    private static JPanel createLimitCard(WindowSnapshot window) {
+        JPanel card = new JPanel();
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setAlignmentX(Component.LEFT_ALIGNMENT);
+        card.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(borderColor(), 1, true),
+            JBUI.Borders.empty(8, 10)
+        ));
+        card.setMaximumSize(new Dimension(JBUI.scale(360), Integer.MAX_VALUE));
+        card.setPreferredSize(new Dimension(JBUI.scale(330), JBUI.scale(72)));
+
+        JPanel heading = new JPanel(new BorderLayout(JBUI.scale(12), 0));
+        heading.setOpaque(false);
+        heading.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JLabel name = new JLabel(window.label());
+        name.setFont(name.getFont().deriveFont(Font.BOLD));
+        JLabel remaining = new JLabel(percent(window.remainingPercent()) + " left");
+        remaining.setFont(remaining.getFont().deriveFont(Font.BOLD));
+        heading.add(name, BorderLayout.WEST);
+        heading.add(remaining, BorderLayout.EAST);
+        card.add(heading);
+        card.add(Box.createVerticalStrut(JBUI.scale(6)));
+
+        JProgressBar progress = new JProgressBar(0, 100);
+        progress.setValue(Math.max(0, window.remainingPercent()));
+        progress.setStringPainted(false);
+        progress.setBorderPainted(false);
+        progress.setMaximumSize(new Dimension(Integer.MAX_VALUE, JBUI.scale(5)));
+        progress.setPreferredSize(new Dimension(JBUI.scale(300), JBUI.scale(5)));
+        progress.setAlignmentX(Component.LEFT_ALIGNMENT);
+        card.add(progress);
+        card.add(Box.createVerticalStrut(JBUI.scale(5)));
+
+        JLabel reset = secondaryLabel("Resets " + window.resetDateText() + "  \u00B7  in " + window.resetInText());
+        card.add(reset);
+        return card;
+    }
+
+    private static JLabel secondaryLabel(String text) {
         JLabel label = new JLabel(text);
-        label.setFont(label.getFont().deriveFont(Font.BOLD));
-        GridBagConstraints constraints = baseConstraints(row, 0);
-        constraints.gridwidth = 4;
-        constraints.insets = JBUI.insets(0, 0, 8, 0);
-        panel.add(label, constraints);
-    }
-
-    private static void addHeaderRow(JPanel panel, int row) {
-        addCell(panel, row, 0, "", true);
-        addCell(panel, row, 1, "Remaining", true);
-        addCell(panel, row, 2, "Resets at", true);
-        addCell(panel, row, 3, "In", true);
-    }
-
-    private static void addLimitRow(JPanel panel, int row, String name, WindowSnapshot window) {
-        addCell(panel, row, 0, name, true);
-        addCell(panel, row, 1, percent(window.remainingPercent()), false);
-        addCell(panel, row, 2, window.resetDateText(), false);
-        addCell(panel, row, 3, window.resetInText(), false);
-    }
-
-    private static void addMessageRow(JPanel panel, int row, String text) {
-        GridBagConstraints constraints = baseConstraints(row, 0);
-        constraints.gridwidth = 4;
-        constraints.insets = JBUI.insets(7, 0, 0, 0);
-        panel.add(new JLabel(text), constraints);
-    }
-
-    private static void addCell(JPanel panel, int row, int column, String text, boolean bold) {
-        JLabel label = new JLabel(text);
-        if (bold) {
-            label.setFont(label.getFont().deriveFont(Font.BOLD));
+        Color color = UIManager.getColor("Label.disabledForeground");
+        if (color != null) {
+            label.setForeground(color);
         }
-        GridBagConstraints constraints = baseConstraints(row, column);
-        constraints.insets = JBUI.insets(2, column == 0 ? 0 : 12, 2, 0);
-        panel.add(label, constraints);
+        label.setAlignmentX(Component.LEFT_ALIGNMENT);
+        return label;
     }
 
-    private static GridBagConstraints baseConstraints(int row, int column) {
-        GridBagConstraints constraints = new GridBagConstraints();
-        constraints.gridx = column;
-        constraints.gridy = row;
-        constraints.anchor = GridBagConstraints.WEST;
-        constraints.fill = GridBagConstraints.HORIZONTAL;
-        constraints.weightx = column == 1 ? 1.0 : 0.0;
-        return constraints;
+    private static Color borderColor() {
+        Color color = UIManager.getColor("Component.borderColor");
+        return color != null ? color : new Color(128, 128, 128, 90);
+    }
+
+    private static Color errorColor() {
+        Color color = UIManager.getColor("ValidationTooltip.errorBackground");
+        return color != null ? color.darker() : new Color(190, 55, 55);
     }
 
     private static Snapshot loadSnapshot(String selectedModel) {
-        RateLimitEvent event = cachedOrLatestRateLimitEvent();
-        if (event == null) {
-            return Snapshot.unavailable("No Codex rate limit event found yet. Send one request first.")
-                .withModel(selectedModel);
+        Path codexHome = activeCodexHome();
+        if (codexHome == null) {
+            return Snapshot.unavailable("The active Codex environment could not be resolved.").withModel(selectedModel);
+        }
+        Path snapshotPath = codexHome.resolve(SNAPSHOT_FILE);
+        RateLimitState state = readRateLimitState(snapshotPath);
+        if (state == null) {
+            return Snapshot.unavailable("Waiting for the first app-server limit refresh.").withModel(selectedModel);
         }
 
-        boolean spark = isSparkModel(selectedModel);
-        RateLimitBucket bucket = spark ? event.spark : event.standard;
+        RateLimitBucket bucket = selectBucket(state.buckets, selectedModel);
         if (bucket == null) {
-            String bucketName = spark ? "GPT-5.3 Codex Spark" : "default";
-            return Snapshot.unavailable("No " + bucketName + " rate limit data from IDEA/WSL runtime yet.")
+            return Snapshot.unavailable("Codex returned no rate-limit buckets.")
                 .withModel(selectedModel)
-                .withBucket(bucketName)
-                .withSource(event.source);
+                .withUpdatedAt(state.updatedAtMillis);
         }
-
+        List<WindowSnapshot> windows = bucket.windows.stream()
+            .sorted(Comparator.comparingInt(WindowSnapshot::windowMinutes))
+            .toList();
         return new Snapshot(
-            selectedModel == null || selectedModel.isBlank() ? "unknown" : selectedModel,
-            spark ? "GPT-5.3 Codex Spark" : "default",
-            bucket.allowed,
+            selectedModel,
+            bucket,
+            windows,
+            state.updatedAtMillis,
             bucket.limitReached,
-            bucket.primary,
-            bucket.secondary,
-            event.source,
             null
-        ).withFreshCountdowns();
+        ).refreshAge();
     }
 
-    private static boolean isSparkModel(String selectedModel) {
-        if (selectedModel == null) {
-            return false;
+    private static RateLimitState readRateLimitState(Path path) {
+        try {
+            long modified = Files.getLastModifiedTime(path).toMillis();
+            CachedRateLimitState cached = STATE_CACHE.get(path);
+            if (cached != null && cached.modifiedMillis == modified) {
+                return cached.state;
+            }
+            long size = Files.size(path);
+            if (size <= 0L || size > MAX_SNAPSHOT_BYTES) {
+                return null;
+            }
+            String json = Files.readString(path, StandardCharsets.UTF_8);
+            RateLimitState parsed = parseRateLimitState(json);
+            if (parsed != null) {
+                STATE_CACHE.put(path, new CachedRateLimitState(modified, parsed));
+                return parsed;
+            }
+            return cached == null ? null : cached.state;
+        } catch (IOException ignored) {
+            CachedRateLimitState cached = STATE_CACHE.get(path);
+            return cached == null ? null : cached.state;
+        } catch (Throwable ignored) {
+            CachedRateLimitState cached = STATE_CACHE.get(path);
+            return cached == null ? null : cached.state;
         }
-        String normalized = selectedModel.toLowerCase(Locale.ROOT);
-        return normalized.contains("spark");
+    }
+
+    private static RateLimitState parseRateLimitState(String json) {
+        Long updatedAt = parseLong(json, "updatedAt");
+        String bucketsObject = objectForKey(json, "rateLimitsByLimitId");
+        Map<String, RateLimitBucket> buckets = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : objectEntries(bucketsObject).entrySet()) {
+            RateLimitBucket bucket = parseBucket(entry.getKey(), entry.getValue());
+            if (bucket != null) {
+                buckets.put(bucket.limitId, bucket);
+            }
+        }
+        if (buckets.isEmpty()) {
+            RateLimitBucket fallback = parseBucket("codex", objectForKey(json, "rateLimits"));
+            if (fallback != null) {
+                buckets.put(fallback.limitId, fallback);
+            }
+        }
+        if (updatedAt == null || updatedAt <= 0L || buckets.isEmpty()) {
+            return null;
+        }
+        return new RateLimitState(updatedAt, buckets);
+    }
+
+    static String summarizeForTest(String json, String selectedModel) {
+        RateLimitState state = parseRateLimitState(json);
+        if (state == null) {
+            return "unavailable";
+        }
+        RateLimitBucket bucket = selectBucket(state.buckets, selectedModel);
+        if (bucket == null) {
+            return "unavailable";
+        }
+        String windows = bucket.windows.stream()
+            .sorted(Comparator.comparingInt(WindowSnapshot::windowMinutes))
+            .map(window -> window.windowMinutes + "=" + window.remainingPercent())
+            .reduce((left, right) -> left + "," + right)
+            .orElse("");
+        return bucket.limitId + "|" + windows;
+    }
+
+    private static RateLimitBucket parseBucket(String mapKey, String object) {
+        if (object == null) {
+            return null;
+        }
+        String limitId = firstNonBlank(parseString(object, "limitId"), mapKey);
+        String limitName = parseString(object, "limitName");
+        List<WindowSnapshot> windows = new ArrayList<>();
+        WindowSnapshot primary = parseWindow(objectForKey(object, "primary"));
+        WindowSnapshot secondary = parseWindow(objectForKey(object, "secondary"));
+        if (primary != null) {
+            windows.add(primary);
+        }
+        if (secondary != null) {
+            windows.add(secondary);
+        }
+        if (windows.isEmpty()) {
+            return null;
+        }
+        String reachedType = parseString(object, "rateLimitReachedType");
+        return new RateLimitBucket(limitId, limitName, windows, reachedType != null && !reachedType.isBlank());
+    }
+
+    private static WindowSnapshot parseWindow(String object) {
+        if (object == null) {
+            return null;
+        }
+        Double usedPercent = parseDouble(object, "usedPercent");
+        Integer windowMinutes = parseInt(object, "windowDurationMins");
+        Long resetsAt = parseLong(object, "resetsAt");
+        if (usedPercent == null || windowMinutes == null) {
+            return null;
+        }
+        return new WindowSnapshot(
+            clamp((int)Math.round(usedPercent), 0, 100),
+            windowMinutes,
+            resetsAt == null ? -1L : resetsAt
+        );
+    }
+
+    private static RateLimitBucket selectBucket(Map<String, RateLimitBucket> buckets, String selectedModel) {
+        String normalizedModel = normalizeModel(selectedModel);
+        if (!normalizedModel.isBlank()) {
+            RateLimitBucket best = null;
+            int bestScore = 0;
+            for (RateLimitBucket bucket : buckets.values()) {
+                String normalizedName = normalizeModel(bucket.limitName);
+                if (normalizedName.isBlank()) {
+                    continue;
+                }
+                int score = normalizedModel.equals(normalizedName) ? 100
+                    : normalizedModel.contains(normalizedName) ? 80
+                    : normalizedName.contains(normalizedModel) ? 60
+                    : tokenOverlapScore(normalizedModel, normalizedName);
+                if (score > bestScore) {
+                    best = bucket;
+                    bestScore = score;
+                }
+            }
+            if (best != null && bestScore >= 40) {
+                return best;
+            }
+        }
+        RateLimitBucket defaultBucket = buckets.get("codex");
+        if (defaultBucket != null) {
+            return defaultBucket;
+        }
+        for (RateLimitBucket bucket : buckets.values()) {
+            if (bucket.limitName == null || bucket.limitName.isBlank()) {
+                return bucket;
+            }
+        }
+        return buckets.values().stream().findFirst().orElse(null);
+    }
+
+    private static int tokenOverlapScore(String left, String right) {
+        if (left.contains("spark") && right.contains("spark")) {
+            return 50;
+        }
+        return 0;
+    }
+
+    private static String normalizeModel(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.toLowerCase(Locale.ROOT)
+            .replaceAll("\\[(?:low|medium|high|xhigh|max|ultra)]", "")
+            .replaceAll("\\((?:low|medium|high|xhigh|max|ultra)\\)", "")
+            .replaceAll("[^a-z0-9]", "");
     }
 
     private static String detectSelectedModel(AIAssistantInput input) {
@@ -283,10 +472,7 @@ public final class CodexUsageLimitPatchSupport {
             return fromVm;
         }
         String fromToolbar = detectSelectedModelFromToolbar(input);
-        if (isMeaningfulModel(fromToolbar)) {
-            return fromToolbar;
-        }
-        return "unknown";
+        return isMeaningfulModel(fromToolbar) ? fromToolbar : "unknown";
     }
 
     private static boolean isMeaningfulModel(String value) {
@@ -294,7 +480,7 @@ public final class CodexUsageLimitPatchSupport {
             return false;
         }
         String normalized = value.toLowerCase(Locale.ROOT);
-        return normalized.contains("spark") || normalized.contains("gpt") || normalized.contains("codex");
+        return normalized.contains("gpt") || normalized.contains("codex");
     }
 
     private static String detectSelectedModelFromVm(AIAssistantInput input) {
@@ -330,17 +516,14 @@ public final class CodexUsageLimitPatchSupport {
             return null;
         }
         try {
-            JComponent toolbar = input.getBottomToolbarPanel();
             List<String> texts = new ArrayList<>();
-            collectTexts(toolbar, texts);
+            collectTexts(input.getBottomToolbarPanel(), texts);
             for (String text : texts) {
-                String normalized = text.toLowerCase(Locale.ROOT);
-                if (normalized.contains("spark") || normalized.contains("gpt") || normalized.contains("codex")) {
+                if (isMeaningfulModel(text)) {
                     return text;
                 }
             }
         } catch (Throwable ignored) {
-            return null;
         }
         return null;
     }
@@ -354,23 +537,14 @@ public final class CodexUsageLimitPatchSupport {
         }
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.isBlank()) {
-                return value;
-            }
-        }
-        return null;
-    }
-
     private static void collectTexts(Component component, List<String> texts) {
         if (component == null) {
             return;
         }
-        if (component instanceof JButton button) {
-            addText(texts, button.getText());
-        } else if (component instanceof JLabel label) {
-            addText(texts, label.getText());
+        if (component instanceof JLabel label && label.getText() != null) {
+            texts.add(label.getText());
+        } else if (component instanceof JButton button && button.getText() != null) {
+            texts.add(button.getText());
         }
         if (component instanceof Container container) {
             for (Component child : container.getComponents()) {
@@ -379,81 +553,7 @@ public final class CodexUsageLimitPatchSupport {
         }
     }
 
-    private static void addText(List<String> texts, String text) {
-        if (text != null && !text.isBlank()) {
-            texts.add(text.trim());
-        }
-    }
-
-    private static RateLimitEvent cachedOrLatestRateLimitEvent() {
-        String cacheKey = activeTelemetryKey();
-        RateLimitEvent latest = findLatestRateLimitEvent();
-        RateLimitEvent cached = LAST_RATE_LIMIT_EVENTS.get(cacheKey);
-        if (latest == null) {
-            return cached;
-        }
-        if (isNewerEvent(latest, cached)) {
-            LAST_RATE_LIMIT_EVENTS.put(cacheKey, latest);
-            return latest;
-        }
-        return cached;
-    }
-
-    private static String activeTelemetryKey() {
-        String distribution = activeWslDistribution();
-        return distribution == null || distribution.isBlank()
-            ? "windows"
-            : "wsl:" + distribution.toLowerCase(Locale.ROOT);
-    }
-
-    private static RateLimitEvent findLatestRateLimitEvent() {
-        List<LogCandidate> candidates = logCandidates();
-        candidates.sort(Comparator.comparingLong((LogCandidate candidate) -> candidate.modifiedMillis).reversed());
-        RateLimitEvent latest = null;
-
-        for (LogCandidate candidate : candidates) {
-            String text = readTail(candidate.path);
-            if (text == null || text.isBlank()) {
-                continue;
-            }
-            RateLimitEvent event = latestRateLimitEvent(text, candidate.path.toString());
-            if (event == null) {
-                continue;
-            }
-            event.modifiedMillis = candidate.modifiedMillis;
-            if (isNewerEvent(event, latest)) {
-                latest = event;
-            }
-        }
-
-        return latest;
-    }
-
-    private static boolean isNewerEvent(RateLimitEvent event, RateLimitEvent current) {
-        if (event == null) {
-            return false;
-        }
-        if (current == null) {
-            return true;
-        }
-        if (event.eventTimestampMillis > 0L && current.eventTimestampMillis > 0L) {
-            if (event.eventTimestampMillis != current.eventTimestampMillis) {
-                return event.eventTimestampMillis > current.eventTimestampMillis;
-            }
-        }
-        if (event.modifiedMillis > 0L || current.modifiedMillis > 0L) {
-            if (event.modifiedMillis != current.modifiedMillis) {
-                return event.modifiedMillis > current.modifiedMillis;
-            }
-        }
-        if (Objects.equals(event.source, current.source) && event.sourceOffset != current.sourceOffset) {
-            return event.sourceOffset > current.sourceOffset;
-        }
-        return event.sourceOffset >= current.sourceOffset;
-    }
-
-    private static List<LogCandidate> logCandidates() {
-        List<Path> paths = new ArrayList<>();
+    private static Path activeCodexHome() {
         String localAppData = System.getenv("LOCALAPPDATA");
         String selector = System.getProperty("idea.paths.selector", "unknown");
         String distro = activeWslDistribution();
@@ -462,30 +562,14 @@ public final class CodexUsageLimitPatchSupport {
             String prefix = "WSL_" + configKey(distro) + "_";
             String wslHome = firstNonBlank(runtime.get(prefix + "CODEX_HOME"), runtime.get("WSL_CODEX_HOME"));
             if (wslHome != null && wslHome.startsWith("/")) {
-                addLogPaths(paths, Path.of("\\\\wsl.localhost\\" + distro + wslHome.replace('/', '\\')));
+                return Path.of("\\\\wsl.localhost\\" + distro + wslHome.replace('/', '\\'));
             }
+            return null;
         }
-        else if (localAppData != null && !localAppData.isBlank()) {
-            addLogPaths(paths, Path.of(localAppData, "JetBrains", selector, "aia", "codex"));
+        if (localAppData == null || localAppData.isBlank()) {
+            return null;
         }
-
-        List<LogCandidate> result = new ArrayList<>();
-        for (Path path : paths) {
-            try {
-                if (Files.isRegularFile(path)) {
-                    result.add(new LogCandidate(path, Files.getLastModifiedTime(path).toMillis()));
-                }
-            } catch (Throwable ignored) {
-            }
-        }
-        return result;
-    }
-
-    private static void addLogPaths(List<Path> paths, Path codexHome) {
-        paths.add(codexHome.resolve("logs_2.sqlite-wal"));
-        paths.add(codexHome.resolve("logs_2.sqlite"));
-        paths.add(codexHome.resolve("logs").resolve("logs_2.sqlite-wal"));
-        paths.add(codexHome.resolve("logs").resolve("logs_2.sqlite"));
+        return Path.of(localAppData, "JetBrains", selector, "aia", "codex");
     }
 
     private static String activeWslDistribution() {
@@ -496,17 +580,17 @@ public final class CodexUsageLimitPatchSupport {
                 return null;
             }
             String normalized = path.replace('\\', '/');
-            String prefix = normalized.toLowerCase(Locale.ROOT).startsWith("//wsl.localhost/")
+            String lower = normalized.toLowerCase(Locale.ROOT);
+            String prefix = lower.startsWith("//wsl.localhost/")
                 ? "//wsl.localhost/"
-                : normalized.toLowerCase(Locale.ROOT).startsWith("//wsl$/") ? "//wsl$/" : null;
+                : lower.startsWith("//wsl$/") ? "//wsl$/" : null;
             if (prefix == null) {
                 return null;
             }
             String remainder = normalized.substring(prefix.length());
             int slash = remainder.indexOf('/');
             return slash > 0 ? remainder.substring(0, slash) : null;
-        }
-        catch (Throwable ignored) {
+        } catch (Throwable ignored) {
             return null;
         }
     }
@@ -532,96 +616,56 @@ public final class CodexUsageLimitPatchSupport {
                 }
             }
             return result;
-        }
-        catch (IOException ignored) {
+        } catch (IOException ignored) {
             return Map.of();
         }
     }
 
-    private static String configKey(String value) {
-        return value.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "_");
-    }
-
-    private static String readTail(Path path) {
-        return readTail(path, MAX_READ_BYTES);
-    }
-
-    private static String readTail(Path path, int maxBytes) {
-        try {
-            long size = Files.size(path);
-            int readLimit = Math.max(1, maxBytes);
-            int length = (int) Math.min(size, readLimit);
-            byte[] bytes;
-            if (size <= readLimit) {
-                bytes = Files.readAllBytes(path);
-            } else {
-                try (var in = Files.newInputStream(path)) {
-                    long skipped = in.skip(size - length);
-                    while (skipped < size - length) {
-                        long next = in.skip(size - length - skipped);
-                        if (next <= 0) {
-                            break;
-                        }
-                        skipped += next;
-                    }
-                    bytes = in.readNBytes(length);
-                }
+    private static Map<String, String> objectEntries(String object) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (object == null || object.length() < 2) {
+            return result;
+        }
+        int index = 1;
+        while (index < object.length() - 1) {
+            index = skipWhitespaceAndCommas(object, index);
+            if (index >= object.length() - 1 || object.charAt(index) != '"') {
+                break;
             }
-            return new String(bytes, StandardCharsets.UTF_8);
-        } catch (IOException ignored) {
-            return null;
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private static RateLimitEvent latestRateLimitEvent(String text, String source) {
-        int marker = text.indexOf("codex.rate_limits");
-        RateLimitEvent latest = null;
-        while (marker >= 0) {
-            int start = text.lastIndexOf('{', marker);
-            while (start >= 0) {
-                String json = extractBalancedObject(text, start);
-                if (json != null && json.contains("\"rate_limits\"")) {
-                    RateLimitEvent event = parseRateLimitEvent(json, source, parseEventTimestampMillis(text, marker), marker);
-                    if (isNewerEvent(event, latest)) {
-                        latest = event;
-                    }
-                    break;
-                }
-                start = text.lastIndexOf('{', start - 1);
+            int keyEnd = findStringEnd(object, index + 1);
+            if (keyEnd < 0) {
+                break;
             }
-            marker = text.indexOf("codex.rate_limits", marker + "codex.rate_limits".length());
-        }
-        return latest;
-    }
-
-    private static long parseEventTimestampMillis(String text, int marker) {
-        long fromAfter = parseEventTimestampMillisFromRange(text, marker, Math.min(text.length(), marker + 4096), true);
-        if (fromAfter > 0L) {
-            return fromAfter;
-        }
-        return parseEventTimestampMillisFromRange(text, Math.max(0, marker - 4096), marker, false);
-    }
-
-    private static long parseEventTimestampMillisFromRange(String text, int start, int end, boolean first) {
-        if (end <= start || start < 0 || start >= text.length()) {
-            return -1L;
-        }
-        String range = text.substring(start, Math.min(end, text.length()));
-        Matcher matcher = Pattern.compile("event\\.timestamp=(\\d{4}-\\d{2}-\\d{2}T[^\\s\\x00]+)").matcher(range);
-        long result = -1L;
-        while (matcher.find()) {
-            try {
-                long parsed = Instant.parse(matcher.group(1)).toEpochMilli();
-                if (first) {
-                    return parsed;
-                }
-                result = parsed;
-            } catch (Throwable ignored) {
+            String key = unescapeJsonString(object.substring(index + 1, keyEnd));
+            int colon = object.indexOf(':', keyEnd + 1);
+            if (colon < 0) {
+                break;
             }
+            int valueStart = skipWhitespace(object, colon + 1);
+            if (valueStart >= object.length() || object.charAt(valueStart) != '{') {
+                index = valueStart + 1;
+                continue;
+            }
+            String value = extractBalancedObject(object, valueStart);
+            if (value == null) {
+                break;
+            }
+            result.put(key, value);
+            index = valueStart + value.length();
         }
         return result;
+    }
+
+    private static String objectForKey(String json, String key) {
+        if (json == null) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:").matcher(json);
+        if (!matcher.find()) {
+            return null;
+        }
+        int start = skipWhitespace(json, matcher.end());
+        return start < json.length() && json.charAt(start) == '{' ? extractBalancedObject(json, start) : null;
     }
 
     private static String extractBalancedObject(String text, int start) {
@@ -654,78 +698,20 @@ public final class CodexUsageLimitPatchSupport {
         return null;
     }
 
-    private static RateLimitEvent parseRateLimitEvent(String json, String source, long eventTimestampMillis, long sourceOffset) {
-        String standardObject = objectForKey(json, "rate_limits");
-        RateLimitBucket standard = parseBucket(standardObject);
-        String additionalObject = objectForKey(json, "additional_rate_limits");
-        RateLimitBucket spark = parseBucket(objectForKey(additionalObject, SPARK_KEY));
-        if (standard == null && spark == null) {
+    private static String parseString(String text, String key) {
+        if (text == null) {
             return null;
         }
-        long freshness = Math.max(freshnessSeconds(standard), freshnessSeconds(spark));
-        return new RateLimitEvent(standard, spark, source, freshness, eventTimestampMillis, sourceOffset);
+        Matcher matcher = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"").matcher(text);
+        return matcher.find() ? unescapeJsonString(matcher.group(1)) : null;
     }
 
-    private static long freshnessSeconds(RateLimitBucket bucket) {
-        if (bucket == null) {
-            return -1L;
-        }
-        return Math.max(bucket.primary.resetAt, bucket.secondary.resetAt);
-    }
-
-    private static RateLimitBucket parseBucket(String object) {
-        if (object == null) {
+    private static Double parseDouble(String text, String key) {
+        if (text == null) {
             return null;
         }
-        WindowSnapshot primary = parseWindow(objectForKey(object, "primary"));
-        WindowSnapshot secondary = parseWindow(objectForKey(object, "secondary"));
-        if (primary == null && secondary == null) {
-            return null;
-        }
-        return new RateLimitBucket(
-            parseBoolean(object, "allowed", true),
-            parseBoolean(object, "limit_reached", false),
-            primary == null ? WindowSnapshot.unknown(300) : primary,
-            secondary == null ? WindowSnapshot.unknown(10080) : secondary
-        );
-    }
-
-    private static WindowSnapshot parseWindow(String object) {
-        if (object == null) {
-            return null;
-        }
-        Integer usedPercent = parseInt(object, "used_percent");
-        Integer windowMinutes = parseInt(object, "window_minutes");
-        Long resetAfterSeconds = parseLong(object, "reset_after_seconds");
-        Long resetAt = parseLong(object, "reset_at");
-        if (usedPercent == null && resetAt == null && resetAfterSeconds == null) {
-            return null;
-        }
-        return new WindowSnapshot(
-            usedPercent == null ? -1 : clamp(usedPercent, 0, 100),
-            windowMinutes == null ? -1 : windowMinutes,
-            resetAfterSeconds == null ? -1L : resetAfterSeconds,
-            resetAt == null ? -1L : resetAt
-        ).withFreshCountdown();
-    }
-
-    private static String objectForKey(String json, String key) {
-        if (json == null) {
-            return null;
-        }
-        int keyIndex = json.indexOf('"' + key + '"');
-        if (keyIndex < 0) {
-            return null;
-        }
-        int colon = json.indexOf(':', keyIndex);
-        if (colon < 0) {
-            return null;
-        }
-        int start = json.indexOf('{', colon);
-        if (start < 0) {
-            return null;
-        }
-        return extractBalancedObject(json, start);
+        Matcher matcher = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)").matcher(text);
+        return matcher.find() ? Double.parseDouble(matcher.group(1)) : null;
     }
 
     private static Integer parseInt(String text, String key) {
@@ -737,166 +723,190 @@ public final class CodexUsageLimitPatchSupport {
         if (text == null) {
             return null;
         }
-        Matcher matcher = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*(-?\\d+)").matcher(text);
+        Matcher matcher = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*(-?\\d+)").matcher(text);
         return matcher.find() ? Long.parseLong(matcher.group(1)) : null;
     }
 
-    private static boolean parseBoolean(String text, String key, boolean fallback) {
-        if (text == null) {
-            return fallback;
+    private static int skipWhitespaceAndCommas(String text, int index) {
+        int next = index;
+        while (next < text.length() && (Character.isWhitespace(text.charAt(next)) || text.charAt(next) == ',')) {
+            next++;
         }
-        Matcher matcher = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*(true|false)").matcher(text);
-        return matcher.find() ? Boolean.parseBoolean(matcher.group(1)) : fallback;
+        return next;
     }
 
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
+    private static int skipWhitespace(String text, int index) {
+        int next = index;
+        while (next < text.length() && Character.isWhitespace(text.charAt(next))) {
+            next++;
+        }
+        return next;
+    }
+
+    private static int findStringEnd(String text, int start) {
+        boolean escape = false;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == '"') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String unescapeJsonString(String value) {
+        return value.replace("\\\"", "\"").replace("\\\\", "\\");
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static String configKey(String value) {
+        return value.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "_");
     }
 
     private static boolean isWindowsHost() {
         return java.io.File.separatorChar == '\\';
     }
 
-    private record LogCandidate(Path path, long modifiedMillis) {}
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
 
-    private static final class RateLimitEvent {
-        private final RateLimitBucket standard;
-        private final RateLimitBucket spark;
-        private final String source;
-        private final long freshnessSeconds;
-        private final long eventTimestampMillis;
-        private final long sourceOffset;
-        private long modifiedMillis;
+    private record CachedRateLimitState(long modifiedMillis, RateLimitState state) {}
 
-        private RateLimitEvent(
-            RateLimitBucket standard,
-            RateLimitBucket spark,
-            String source,
-            long freshnessSeconds,
-            long eventTimestampMillis,
-            long sourceOffset
-        ) {
-            this.standard = standard;
-            this.spark = spark;
-            this.source = source;
-            this.freshnessSeconds = freshnessSeconds;
-            this.eventTimestampMillis = eventTimestampMillis;
-            this.sourceOffset = sourceOffset;
+    private record RateLimitState(long updatedAtMillis, Map<String, RateLimitBucket> buckets) {}
+
+    private record RateLimitBucket(
+        String limitId,
+        String limitName,
+        List<WindowSnapshot> windows,
+        boolean limitReached
+    ) {
+        private String label() {
+            if (limitName != null && !limitName.isBlank()) {
+                return limitName;
+            }
+            return Objects.equals(limitId, "codex") ? "Shared Codex quota" : limitId;
         }
     }
 
-    private record RateLimitBucket(
-        boolean allowed,
-        boolean limitReached,
-        WindowSnapshot primary,
-        WindowSnapshot secondary
-    ) {}
-
-    private record WindowSnapshot(
-        int usedPercent,
-        int windowMinutes,
-        long resetAfterSeconds,
-        long resetAt
-    ) {
-        private static WindowSnapshot unknown(int windowMinutes) {
-            return new WindowSnapshot(-1, windowMinutes, -1L, -1L);
-        }
-
-        private WindowSnapshot withFreshCountdown() {
-            if (resetAt <= 0L) {
-                return this;
-            }
-            long next = Math.max(0L, resetAt - Instant.now().getEpochSecond());
-            return new WindowSnapshot(usedPercent, windowMinutes, next, resetAt);
-        }
-
+    private record WindowSnapshot(int usedPercent, int windowMinutes, long resetsAt) {
         private int remainingPercent() {
-            return usedPercent < 0 ? -1 : clamp(100 - usedPercent, 0, 100);
+            return clamp(100 - usedPercent, 0, 100);
+        }
+
+        private String label() {
+            if (windowMinutes == 300) {
+                return "5 hours";
+            }
+            if (windowMinutes == 10080) {
+                return "Weekly";
+            }
+            if (windowMinutes < 60) {
+                return windowMinutes + " minutes";
+            }
+            if (windowMinutes < 1440) {
+                return Math.round(windowMinutes / 60.0) + " hours";
+            }
+            return Math.round(windowMinutes / 1440.0) + " days";
         }
 
         private String resetDateText() {
-            return resetAt > 0L ? DATE_FORMAT.format(Instant.ofEpochSecond(resetAt)) : "unknown";
+            return resetsAt > 0L ? RESET_FORMAT.format(Instant.ofEpochSecond(resetsAt)) : "unknown";
         }
 
         private String resetInText() {
-            return resetAfterSeconds >= 0L ? formatDuration(resetAfterSeconds) : "unknown";
+            return resetsAt > 0L ? formatDuration(Math.max(0L, resetsAt - Instant.now().getEpochSecond())) : "unknown";
         }
     }
 
     private record Snapshot(
         String selectedModel,
-        String bucketName,
-        boolean allowed,
+        RateLimitBucket bucket,
+        List<WindowSnapshot> windows,
+        long updatedAtMillis,
         boolean limitReached,
-        WindowSnapshot primary,
-        WindowSnapshot secondary,
-        String source,
         String error
     ) {
         private static Snapshot unavailable(String error) {
-            return new Snapshot(
-                "unknown",
-                "unknown",
-                false,
-                false,
-                WindowSnapshot.unknown(300),
-                WindowSnapshot.unknown(10080),
-                null,
-                error
-            );
+            return new Snapshot("unknown", null, List.of(), -1L, false, error);
         }
 
         private Snapshot withModel(String model) {
-            return new Snapshot(
-                model == null || model.isBlank() ? selectedModel : model,
-                bucketName,
-                allowed,
-                limitReached,
-                primary,
-                secondary,
-                source,
-                error
-            );
+            return new Snapshot(model == null || model.isBlank() ? selectedModel : model, bucket, windows, updatedAtMillis, limitReached, error);
         }
 
-        private Snapshot withSource(String nextSource) {
-            return new Snapshot(selectedModel, bucketName, allowed, limitReached, primary, secondary, nextSource, error);
+        private Snapshot withUpdatedAt(long nextUpdatedAt) {
+            return new Snapshot(selectedModel, bucket, windows, nextUpdatedAt, limitReached, error);
         }
 
-        private Snapshot withBucket(String nextBucketName) {
-            return new Snapshot(selectedModel, nextBucketName, allowed, limitReached, primary, secondary, source, error);
+        private Snapshot refreshAge() {
+            return this;
         }
 
-        private Snapshot withFreshCountdowns() {
-            return new Snapshot(
-                selectedModel,
-                bucketName,
-                allowed,
-                limitReached,
-                primary.withFreshCountdown(),
-                secondary.withFreshCountdown(),
-                source,
-                error
-            );
+        private boolean stale() {
+            return updatedAtMillis <= 0L || System.currentTimeMillis() - updatedAtMillis > STALE_AFTER_MILLIS;
         }
 
         private String buttonText() {
-            String prefix = Objects.equals(bucketName, "GPT-5.3 Codex Spark") ? "Spark " : "";
-            return prefix + percent(primary.remainingPercent()) + " / " + percent(secondary.remainingPercent()) + " \u25BE";
+            if (stale() || windows.isEmpty()) {
+                return "--% \u25BE";
+            }
+            return windows.stream()
+                .limit(2)
+                .map(window -> percent(window.remainingPercent()))
+                .reduce((left, right) -> left + " \u00B7 " + right)
+                .orElse("--%") + " \u25BE";
         }
 
         private String tooltip() {
-            return "Codex limits, remaining 5h/week: " + buttonText();
+            if (stale()) {
+                return "Codex limits are waiting for a fresh app-server snapshot.";
+            }
+            String limits = windows.stream()
+                .map(window -> window.label() + ": " + percent(window.remainingPercent()) + " remaining")
+                .reduce((left, right) -> left + " \u00B7 " + right)
+                .orElse("No rate-limit windows");
+            return limits + (hasKnownModel() ? " \u00B7 " + modelLabel() : "");
         }
 
         private boolean hasKnownModel() {
             return selectedModel != null && !selectedModel.isBlank() && !"unknown".equalsIgnoreCase(selectedModel);
         }
 
-        private String bucketTitle() {
-            return Objects.equals(bucketName, "GPT-5.3 Codex Spark") ? "GPT-5.3 Spark" : "Default";
+        private String modelLabel() {
+            if (!hasKnownModel()) {
+                return "Unknown model";
+            }
+            int open = selectedModel.indexOf(" (");
+            return open > 0 ? selectedModel.substring(0, open) : selectedModel;
         }
 
+        private String bucketLabel() {
+            return bucket == null ? "No quota bucket" : bucket.label();
+        }
+
+        private String freshnessText() {
+            if (updatedAtMillis <= 0L) {
+                return "Waiting for Codex app-server";
+            }
+            long ageSeconds = Math.max(0L, (System.currentTimeMillis() - updatedAtMillis) / 1000L);
+            if (stale()) {
+                return "Data is stale (last update " + formatDuration(ageSeconds) + " ago)";
+            }
+            return ageSeconds < 2L ? "Updated just now" : "Updated " + ageSeconds + "s ago";
+        }
     }
 
     private static String percent(int value) {
@@ -911,11 +921,11 @@ public final class CodexUsageLimitPatchSupport {
         safe %= 3_600L;
         long minutes = safe / 60L;
         if (days > 0L) {
-            return days + "d " + hours + "h " + minutes + "m";
+            return days + "d " + hours + "h";
         }
         if (hours > 0L) {
             return hours + "h " + minutes + "m";
         }
-        return minutes + "m";
+        return Math.max(1L, minutes) + "m";
     }
 }

@@ -4,6 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+. (Join-Path $repoRoot 'scripts\lib\Common.ps1')
 $failures = [Collections.Generic.List[string]]::new()
 
 function Assert-True {
@@ -12,6 +13,14 @@ function Assert-True {
         $failures.Add($Message)
     }
 }
+
+$stableJson = ConvertTo-StableJson -InputObject ([ordered]@{
+    outer = [ordered]@{ value = 1 }
+    empty = @()
+    text = 'a:b,c'
+})
+$expectedStableJson = "{`n  `"outer`": {`n    `"value`": 1`n  },`n  `"empty`": [],`n  `"text`": `"a:b,c`"`n}"
+Assert-True ($stableJson -ceq $expectedStableJson) 'Stable JSON formatter output changed.'
 
 $powerShellFiles = Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter '*.ps1' |
     Where-Object { $_.FullName -notmatch '[\\/]\.build[\\/]|[\\/]\.state[\\/]' }
@@ -32,9 +41,18 @@ foreach ($file in $jsonFiles) {
     try {
         $parsed = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
         if ($file.Directory.Name -eq 'compatibility') {
+            $repositoryVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
+            Assert-True ([string]$parsed.patchVersion -eq $repositoryVersion) "Compatibility patch version differs from VERSION in $($file.FullName)"
             foreach ($jar in @($parsed.jars.runtime, $parsed.jars.chat, $parsed.jars.frontend)) {
                 Assert-True ([string]$jar.patchedSha256 -match '^[A-Fa-f0-9]{64}$') "Patched SHA-256 is missing in $($file.FullName): $($jar.path)"
             }
+        } elseif ($file.Name -eq 'runtime.lock.json') {
+            foreach ($asset in @($parsed.codex.assets.PSObject.Properties.Value) + @($parsed.node.assets.PSObject.Properties.Value)) {
+                Assert-True ([string]$asset.sha256 -match '^[A-Fa-f0-9]{64}$') "Runtime asset SHA-256 is invalid: $($asset.name)"
+            }
+            Assert-True ([string]$parsed.acp.rateLimitBridge.cleanSha256 -match '^[A-Fa-f0-9]{64}$') 'ACP bridge clean SHA-256 is missing.'
+            Assert-True ([string]$parsed.acp.rateLimitBridge.patchedSha256 -match '^[A-Fa-f0-9]{64}$') 'ACP bridge patched SHA-256 is missing.'
+            Assert-True ([int]$parsed.acp.rateLimitBridge.refreshSeconds -eq 20) 'ACP bridge refresh interval must remain 20 seconds.'
         }
     }
     catch {
@@ -60,6 +78,8 @@ foreach ($legacy in @(
     Assert-True ($sourceText.IndexOf($legacy, [StringComparison]::Ordinal) -lt 0) "Legacy patch helper is still referenced: $legacy"
 }
 Assert-True ($sourceText.IndexOf('return if (', [StringComparison]::OrdinalIgnoreCase) -lt 0) 'Invalid PowerShell return-if expression found.'
+Assert-True ($sourceText.IndexOf('logs_2.sqlite', [StringComparison]::OrdinalIgnoreCase) -lt 0) 'SQLite telemetry scraping is still referenced by source.'
+Assert-True ($sourceText.IndexOf('account/rateLimits/read', [StringComparison]::Ordinal) -ge 0) 'App-server rate-limit RPC is not referenced by source.'
 
 $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
 Assert-True ($version -match '^\d+\.\d+\.\d+$') "VERSION is not semantic: $version"

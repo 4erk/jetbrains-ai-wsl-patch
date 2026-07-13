@@ -69,7 +69,7 @@ $manifest = [ordered]@{
     }
     patchVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
     jars = [ordered]@{}
-    features = @('codex-runtime-routing', 'wsl-file-navigation', 'usage-limits', 'completion-sound')
+    features = @('codex-runtime-routing', 'wsl-file-navigation', 'usage-limits-app-server', 'completion-sound')
 }
 foreach ($name in $jars.Keys) {
     $path = [string]$jars[$name]
@@ -81,6 +81,6 @@ foreach ($name in $jars.Keys) {
 }
 
 if ($PSCmdlet.ShouldProcess($OutputPath, "Write compatibility manifest for JetBrains AI $version")) {
-    Write-Utf8NoBom -Path $OutputPath -Lines @(($manifest | ConvertTo-Json -Depth 8))
+    Write-Utf8NoBom -Path $OutputPath -Lines @(ConvertTo-StableJson -InputObject $manifest -Depth 8)
 }
-Write-Output ($manifest | ConvertTo-Json -Depth 8)
+Write-Output (ConvertTo-StableJson -InputObject $manifest -Depth 8)

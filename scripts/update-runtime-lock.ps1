@@ -53,6 +53,7 @@ $next = [ordered]@{
     acp = [ordered]@{
         package = '@agentclientprotocol/codex-acp'
         version = $acpVersion
+        rateLimitBridge = $current.acp.rateLimitBridge
     }
     node = $current.node
 }
@@ -65,8 +66,11 @@ $result = [ordered]@{
     currentAcp = [string]$current.acp.version
     latestAcp = $acpVersion
 }
+if ($Apply -and $acpVersion -ne [string]$current.acp.version) {
+    throw "ACP changed from $($current.acp.version) to $acpVersion. Capture and review new rateLimitBridge clean/patched hashes before applying the lock update."
+}
 if ($Apply -and $changed -and $PSCmdlet.ShouldProcess($path, 'Update locked Codex and ACP versions')) {
-    Write-Utf8NoBom -Path $path -Lines @(($next | ConvertTo-Json -Depth 12))
+    Write-Utf8NoBom -Path $path -Lines @(ConvertTo-StableJson -InputObject $next -Depth 12)
     $result['applied'] = $true
 }
 else {

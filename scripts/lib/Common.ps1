@@ -170,6 +170,75 @@ function Write-Utf8NoBom {
     [IO.File]::WriteAllLines($Path, $Lines, [Text.UTF8Encoding]::new($false))
 }
 
+function ConvertTo-StableJson {
+    param(
+        [Parameter(Mandatory)]$InputObject,
+        [int]$Depth = 12
+    )
+
+    $compact = ConvertTo-Json -InputObject $InputObject -Depth $Depth -Compress
+    $builder = [Text.StringBuilder]::new()
+    $level = 0
+    $inString = $false
+    $escaped = $false
+
+    for ($index = 0; $index -lt $compact.Length; $index++) {
+        $character = $compact[$index]
+        if ($inString) {
+            [void]$builder.Append($character)
+            if ($escaped) {
+                $escaped = $false
+            }
+            elseif ($character -eq '\') {
+                $escaped = $true
+            }
+            elseif ($character -eq '"') {
+                $inString = $false
+            }
+            continue
+        }
+
+        switch ($character) {
+            '"' {
+                $inString = $true
+                [void]$builder.Append($character)
+            }
+            { $_ -eq '{' -or $_ -eq '[' } {
+                [void]$builder.Append($character)
+                $closing = if ($character -eq '{') { '}' } else { ']' }
+                if ($index + 1 -lt $compact.Length -and $compact[$index + 1] -ne $closing) {
+                    $level++
+                    [void]$builder.Append("`n")
+                    [void]$builder.Append(' ' * ($level * 2))
+                }
+            }
+            { $_ -eq '}' -or $_ -eq ']' } {
+                $opening = if ($character -eq '}') { '{' } else { '[' }
+                if ($index -gt 0 -and $compact[$index - 1] -ne $opening) {
+                    $level--
+                    [void]$builder.Append("`n")
+                    [void]$builder.Append(' ' * ($level * 2))
+                }
+                [void]$builder.Append($character)
+            }
+            ',' {
+                [void]$builder.Append(",`n")
+                [void]$builder.Append(' ' * ($level * 2))
+            }
+            ':' {
+                [void]$builder.Append(': ')
+            }
+            default {
+                if (-not [char]::IsWhiteSpace($character)) {
+                    [void]$builder.Append($character)
+                }
+            }
+        }
+    }
+
+    return $builder.ToString()
+}
+
 function Read-KeyValueFile {
     param([Parameter(Mandatory)][string]$Path)
 

@@ -5,14 +5,14 @@
 - Windows-проект использует Windows Node, ACP и Codex.
 - WSL-проект использует Linux Node, ACP и Codex внутри соответствующего дистрибутива и от непривилегированного пользователя.
 - Абсолютные Linux-ссылки из чата открываются как WSL-файлы.
-- В панели чата отображаются актуальные лимиты Codex для обычных моделей и отдельного Spark bucket.
+- В панели чата отображаются актуальные динамические лимиты Codex для выбранной модели.
 - Звук завершения воспроизводится и при активном окне IDE.
 
 Патч не содержит JAR JetBrains или бинарники Codex. Он проверяет исходные SHA-256, компилирует небольшие helper-классы и меняет только подтверждённые bytecode hook points. При изменении структуры плагина сборка останавливается, а не пытается применить несовместимый патч.
 
 ## Поддерживаемые версии
 
-Текущий release `1.0.0` поддерживает:
+Текущий release `1.1.0` поддерживает:
 
 - JetBrains AI Assistant `261.25134.237`;
 - JetBrains IDE build `261.25134.*`;
@@ -20,6 +20,8 @@
 - WSL 2 Linux x64/arm64;
 - Codex CLI `0.144.3`;
 - `@agentclientprotocol/codex-acp` `1.1.2`.
+
+Индикатор не читает диагностическую SQLite. Version-checked bridge внутри установленного ACP опрашивает официальный `account/rateLimits/read` раз в 20 секунд и атомарно обновляет небольшой JSON snapshot в активном `CODEX_HOME`. Окна строятся по `windowDurationMins`: если backend вернул только недельное окно, UI не дорисовывает несуществующий 5-часовой лимит. Именованные buckets сопоставляются с выбранной моделью по `limitName`; остальные модели используют объявленный backend default bucket.
 
 Имя IDE, профиль, WSL-дистрибутив, пользователь и домашний каталог не зашиты в исходники. Установщик читает IDE metadata и определяет WSL target. Для нескольких IDE или дистрибутивов параметры лучше передать явно.
 
@@ -86,7 +88,7 @@ cd jetbrains-ai-wsl-patch
 .\scripts\update-runtime-lock.ps1 -Apply
 ```
 
-Процесс переноса на новую версию JetBrains AI описан в [docs/UPDATING.md](docs/UPDATING.md). Архитектурные границы и формат runtime manifest описаны в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Процесс переноса на новую версию JetBrains AI описан в [docs/UPDATING.md](docs/UPDATING.md). Архитектурные границы и формат runtime manifest описаны в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Политика версий и release tags описана в [docs/VERSIONING.md](docs/VERSIONING.md).
 
 ## Важные границы
 

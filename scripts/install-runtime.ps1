@@ -85,6 +85,7 @@ if ($installedAcpVersion -ne [string]$lock.acp.version) {
 if (-not (Test-Path -LiteralPath $acpEntry -PathType Leaf)) {
     throw "Windows ACP entry point is missing: $acpEntry"
 }
+& (Join-Path $PSScriptRoot 'patch-acp-rate-limits.ps1') -EntryPath $acpEntry -LockPath (Join-Path $repoRoot 'runtime.lock.json') | Out-Host
 
 $codexAsset = $lock.codex.assets."windows-$windowsArch"
 $codexRoot = Join-Path $runtimeRoot "codex\$($lock.codex.version)"
@@ -212,6 +213,8 @@ if ($wsl) {
             throw "WSL ACP installation failed with exit code $LASTEXITCODE"
         }
     }
+    $wslAcpEntryWindows = "\\wsl.localhost\$($wsl.Distribution)$($wslAcpEntry.Replace('/', '\'))"
+    & (Join-Path $PSScriptRoot 'patch-acp-rate-limits.ps1') -EntryPath $wslAcpEntryWindows -LockPath (Join-Path $repoRoot 'runtime.lock.json') | Out-Host
 
     $linuxAsset = $lock.codex.assets."linux-$wslArch"
     $wslCodexRoot = "$wslCodexHome/runtime/codex/$($lock.codex.version)"

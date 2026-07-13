@@ -10,3 +10,5 @@
 ```
 
 Не публикуйте vendor artifacts, runtime binaries, логи, credentials или локальные конфиги. Для новой версии JetBrains AI добавляйте новый compatibility manifest и запись в changelog.
+
+После live-проверки установленного патча commit должен быть опубликован вместе с versioned tag через `scripts/release.ps1`. Не создавайте release tag до проверки реального Windows/WSL runtime и свежего rate-limit snapshot.
