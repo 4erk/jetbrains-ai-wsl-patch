@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "codex": {
+    "version": "0.144.3",
+    "tag": "rust-v0.144.3",
+    "assets": {
+      "windows-x64": {
+        "name": "codex-x86_64-pc-windows-msvc.exe.zip",
+        "sha256": "5490114d8684b30f91e6e6f7b1238b2544fa3b957e42c9836aa959e8f563c01f"
+      },
+      "windows-arm64": {
+        "name": "codex-aarch64-pc-windows-msvc.exe.zip",
+        "sha256": "f30c2b4e98a910b145dc3c9b054a132ce6dd485f95d6add6bf12a119519df3b7"
+      },
+      "linux-x64": {
+        "name": "codex-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "b9b4ae8e9b561c64dfbc5ef52c6319cba750ac87de3c7f55885026231e3aea89"
+      },
+      "linux-arm64": {
+        "name": "codex-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "dd76cfd5a2cf9bcf0e3224afe28e23065cfd27262e06e0ffbc8fa40343f0905a"
+      }
+    }
+  },
+  "acp": {
+    "package": "@agentclientprotocol/codex-acp",
+    "version": "1.1.2"
+  },
+  "node": {
+    "minimumMajor": 20,
+    "preferredVersion": "24.13.0",
+    "baseUrl": "https://nodejs.org/download/release/v24.13.0",
+    "assets": {
+      "windows-x64": {
+        "name": "node-v24.13.0-win-x64.zip",
+        "sha256": "ca2742695be8de44027d71b3f53a4bdb36009b95575fe1ae6f7f0b5ce091cb88"
+      },
+      "windows-arm64": {
+        "name": "node-v24.13.0-win-arm64.zip",
+        "sha256": "92b9f9b0c0c123e11e4afc535f0ec19cd987465eea506427553a49971364158a"
+      },
+      "linux-x64": {
+        "name": "node-v24.13.0-linux-x64.tar.xz",
+        "sha256": "e798599612f4bb71333a3397ab0d095fd62214e115aea45aa858a145fc72d67e"
+      },
+      "linux-arm64": {
+        "name": "node-v24.13.0-linux-arm64.tar.xz",
+        "sha256": "aa881151bd0f9f154a0424dd60a72e9ce10672619121658c278a24327ef46831"
+      }
+    }
+  }
+}

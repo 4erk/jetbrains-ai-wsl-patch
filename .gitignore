@@ -1,0 +1,12 @@
+/.build/
+/.state/
+*.log
+*.tmp
+*.bak
+.idea/
+*.jar
+*.zip
+*.exe
+*.tar.gz
+auth.json
+config.toml

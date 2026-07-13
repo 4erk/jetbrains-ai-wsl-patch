@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "plugin": {
+    "id": "com.intellij.ml.llm",
+    "version": "261.25134.237",
+    "sinceBuild": "261.25134",
+    "untilBuild": "261.25134.*"
+  },
+  "patchVersion": "1.0.0",
+  "jars": {
+    "runtime": {
+      "path": "lib/ml-llm.jar",
+      "sha256": "2724DE928D586250B191514A449CC4489260022BFDA34765C340CC39F05BF892",
+      "patchedSha256": "107198C967265457645B9C352C1CD6AE9C264A7B5931F6C2CAF1F9BDA42D7193"
+    },
+    "chat": {
+      "path": "lib/modules/intellij.ml.llm.chat.jar",
+      "sha256": "EED4B76E546170838D687D8BC120A82CE412427E6AD1AE397793C4B7A1931691",
+      "patchedSha256": "589C9165B2C7110E967D8171897B4557D3E4364ACDCE88441E7BEC460B0335D3"
+    },
+    "frontend": {
+      "path": "lib/modules/intellij.ml.llm.agents.frontend.jar",
+      "sha256": "690444466F8CB0B789B638F9C35F07270D8FE9FCAA2105C90390505292AC5534",
+      "patchedSha256": "ECD8C35980D8DED3B183E2E5B7A27DFF6659E4CF2660584339BE831FF996F630"
+    }
+  },
+  "features": [
+    "codex-runtime-routing",
+    "wsl-file-navigation",
+    "usage-limits",
+    "completion-sound"
+  ]
+}
