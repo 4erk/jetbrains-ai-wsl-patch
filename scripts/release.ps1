@@ -27,8 +27,7 @@ if ($manifests.Count -eq 0) {
 $tags = @($manifests | ForEach-Object { "jbai-$([string]$_.plugin.version)-patch-$version" })
 $head = (& git -C $repoRoot rev-parse HEAD).Trim()
 foreach ($tag in $tags) {
-    $localTag = [string](& git -C $repoRoot tag --list $tag)
-    $localTag = $localTag.Trim()
+    $localTag = (@(& git -C $repoRoot tag --list $tag) -join '').Trim()
     if ($localTag) {
         $tagCommit = (& git -C $repoRoot rev-list -n 1 $tag).Trim()
         if ($tagCommit -ne $head) {
