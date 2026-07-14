@@ -90,6 +90,8 @@ cd jetbrains-ai-wsl-patch
 
 Процесс переноса на новую версию JetBrains AI описан в [docs/UPDATING.md](docs/UPDATING.md). Архитектурные границы и формат runtime manifest описаны в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Политика версий и release tags описана в [docs/VERSIONING.md](docs/VERSIONING.md).
 
+Полный перенос текущей IntelliJ IDEA, плагинов, настроек, WSL и Codex на новый компьютер описан в [docs/NEW-PC-SETUP.md](docs/NEW-PC-SETUP.md).
+
 ## Важные границы
 
 - Патч не меняет лицензирование JetBrains, netfilter, MCP-конфигурацию, model selector или lifecycle сессий.

@@ -15,6 +15,7 @@ This repository patches JetBrains AI only for environment-correct Codex runtime 
 - Invoke WSL with an explicit distribution and non-root user after discovery. Avoid shell-quoted command strings when direct argv is sufficient.
 - Share the newest `auth.json` across Windows and WSL. Keep `config.toml` platform-specific and synchronize it only within the same platform.
 - Keep installation idempotent, produce machine-readable status, and preserve a verified rollback path.
+- Keep workstation migration baselines factual and dated. Never commit exported settings, plugin binaries, chat history, licenses, tokens, SSH keys, or Codex auth files.
 - Treat `account/rateLimits/read` as the usage-limit source of truth. Never scrape SQLite, WAL, text logs, or UI strings for current quota values.
 - Model quota windows and buckets dynamically from the app-server response. Do not assume that every plan has both 5-hour and weekly windows or hardcode a single special model.
 

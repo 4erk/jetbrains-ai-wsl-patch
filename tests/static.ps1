@@ -36,6 +36,7 @@ foreach ($file in $powerShellFiles) {
 $jsonFiles = @(
     Get-Item -LiteralPath (Join-Path $repoRoot 'runtime.lock.json')
     Get-ChildItem -LiteralPath (Join-Path $repoRoot 'compatibility') -Filter '*.json'
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs\workstation') -Filter '*.json'
 )
 foreach ($file in $jsonFiles) {
     try {
@@ -53,6 +54,14 @@ foreach ($file in $jsonFiles) {
             Assert-True ([string]$parsed.acp.rateLimitBridge.cleanSha256 -match '^[A-Fa-f0-9]{64}$') 'ACP bridge clean SHA-256 is missing.'
             Assert-True ([string]$parsed.acp.rateLimitBridge.patchedSha256 -match '^[A-Fa-f0-9]{64}$') 'ACP bridge patched SHA-256 is missing.'
             Assert-True ([int]$parsed.acp.rateLimitBridge.refreshSeconds -eq 20) 'ACP bridge refresh interval must remain 20 seconds.'
+        } elseif ($file.Name -eq 'current-baseline.json') {
+            $repositoryVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
+            $compatibilityPath = Join-Path $repoRoot "compatibility\$([string]$parsed.patch.jetBrainsAiVersion).json"
+            Assert-True ([string]$parsed.patch.version -eq $repositoryVersion) 'Workstation baseline patch version differs from VERSION.'
+            Assert-True (Test-Path -LiteralPath $compatibilityPath -PathType Leaf) 'Workstation baseline JetBrains AI version has no compatibility manifest.'
+            Assert-True ([string]$parsed.patch.tag -eq "jbai-$([string]$parsed.patch.jetBrainsAiVersion)-patch-$repositoryVersion") 'Workstation baseline release tag is inconsistent.'
+            Assert-True (@($parsed.pluginDirectories).Count -eq @($parsed.pluginDirectories | Select-Object -Unique).Count) 'Workstation baseline contains duplicate plugin directories.'
+            Assert-True (@($parsed.disabledPluginIds).Count -eq @($parsed.disabledPluginIds | Select-Object -Unique).Count) 'Workstation baseline contains duplicate disabled plugin IDs.'
         }
     }
     catch {
