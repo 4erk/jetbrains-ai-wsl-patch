@@ -14,7 +14,7 @@
 
 ## 3. Провести upstream audit
 
-Перед переносом проверьте, не исправлена ли функция самим JetBrains plugin. Не переносите старые lifecycle/session/model workarounds автоматически. Текущий scope ограничен четырьмя feature из compatibility manifest.
+Перед переносом проверьте, не исправлена ли функция самим JetBrains plugin. Не переносите старые lifecycle/session/model workarounds автоматически. Текущий scope ограничен features, явно перечисленными в compatibility manifest.
 
 Запустите build test:
 
@@ -40,7 +40,7 @@
 - при необходимости обновите `runtime.lock.json` отдельной командой;
 - не добавляйте plugin ZIP, JAR, runtime downloads или `.state`.
 
-Release tag имеет форму `jbai-<plugin-version>-patch-<patch-version>`, например `jbai-261.25134.237-patch-1.1.0`. После успешной live-проверки commit и tag публикуются командой `scripts/release.ps1`.
+Release tag имеет форму `jbai-<plugin-version>-patch-<patch-version>`, например `jbai-261.25134.237-patch-1.2.0`. После успешной live-проверки commit и tag публикуются командой `scripts/release.ps1`.
 
 ## 5. Установить и проверить
 

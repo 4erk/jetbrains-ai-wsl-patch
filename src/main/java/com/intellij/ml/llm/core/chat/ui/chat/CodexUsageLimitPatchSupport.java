@@ -53,6 +53,7 @@ public final class CodexUsageLimitPatchSupport {
     private static final String INSTALLED_KEY = "codex.usage.limit.patch.installed";
     private static final String BUTTON_KEY = "codex.usage.limit.patch.button";
     private static final String SNAPSHOT_FILE = "jetbrains-rate-limits.json";
+    private static final String SNAPSHOT_BACKUP_FILE = SNAPSHOT_FILE + ".last-good";
     private static final long UI_REFRESH_MILLIS = 1_000L;
     private static final long STALE_AFTER_MILLIS = 75_000L;
     private static final int MAX_SNAPSHOT_BYTES = 1024 * 1024;
@@ -183,10 +184,8 @@ public final class CodexUsageLimitPatchSupport {
             }
 
             panel.add(Box.createVerticalStrut(JBUI.scale(10)));
-            if (current.windows.isEmpty() || current.stale()) {
-                String message = current.stale() && current.updatedAtMillis > 0L
-                    ? "Waiting for a fresh Codex snapshot."
-                    : current.error == null ? "Rate-limit data is unavailable." : current.error;
+            if (current.windows.isEmpty()) {
+                String message = current.error == null ? "Rate-limit data is unavailable." : current.error;
                 JLabel unavailable = new JLabel(message);
                 unavailable.setAlignmentX(Component.LEFT_ALIGNMENT);
                 panel.add(unavailable);
@@ -284,8 +283,7 @@ public final class CodexUsageLimitPatchSupport {
         if (codexHome == null) {
             return Snapshot.unavailable("The active Codex environment could not be resolved.").withModel(selectedModel);
         }
-        Path snapshotPath = codexHome.resolve(SNAPSHOT_FILE);
-        RateLimitState state = readRateLimitState(snapshotPath);
+        RateLimitState state = readBestRateLimitState(codexHome);
         if (state == null) {
             return Snapshot.unavailable("Waiting for the first app-server limit refresh.").withModel(selectedModel);
         }
@@ -303,10 +301,22 @@ public final class CodexUsageLimitPatchSupport {
             selectedModel,
             bucket,
             windows,
-            state.updatedAtMillis,
+            bucket.updatedAtMillis,
             bucket.limitReached,
             null
         ).refreshAge();
+    }
+
+    private static RateLimitState readBestRateLimitState(Path codexHome) {
+        RateLimitState primary = readRateLimitState(codexHome.resolve(SNAPSHOT_FILE));
+        RateLimitState backup = readRateLimitState(codexHome.resolve(SNAPSHOT_BACKUP_FILE));
+        if (primary == null) {
+            return backup;
+        }
+        if (backup == null) {
+            return primary;
+        }
+        return primary.updatedAtMillis >= backup.updatedAtMillis ? primary : backup;
     }
 
     private static RateLimitState readRateLimitState(Path path) {
@@ -338,21 +348,24 @@ public final class CodexUsageLimitPatchSupport {
 
     private static RateLimitState parseRateLimitState(String json) {
         Long updatedAt = parseLong(json, "updatedAt");
+        if (updatedAt == null || updatedAt <= 0L) {
+            return null;
+        }
         String bucketsObject = objectForKey(json, "rateLimitsByLimitId");
         Map<String, RateLimitBucket> buckets = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : objectEntries(bucketsObject).entrySet()) {
-            RateLimitBucket bucket = parseBucket(entry.getKey(), entry.getValue());
+            RateLimitBucket bucket = parseBucket(entry.getKey(), entry.getValue(), updatedAt);
             if (bucket != null) {
                 buckets.put(bucket.limitId, bucket);
             }
         }
         if (buckets.isEmpty()) {
-            RateLimitBucket fallback = parseBucket("codex", objectForKey(json, "rateLimits"));
+            RateLimitBucket fallback = parseBucket("codex", objectForKey(json, "rateLimits"), updatedAt);
             if (fallback != null) {
                 buckets.put(fallback.limitId, fallback);
             }
         }
-        if (updatedAt == null || updatedAt <= 0L || buckets.isEmpty()) {
+        if (buckets.isEmpty()) {
             return null;
         }
         return new RateLimitState(updatedAt, buckets);
@@ -375,7 +388,24 @@ public final class CodexUsageLimitPatchSupport {
         return bucket.limitId + "|" + windows;
     }
 
-    private static RateLimitBucket parseBucket(String mapKey, String object) {
+    static String summarizeBestForTest(Path codexHome, String selectedModel) {
+        RateLimitState state = readBestRateLimitState(codexHome);
+        if (state == null) {
+            return "unavailable";
+        }
+        RateLimitBucket bucket = selectBucket(state.buckets, selectedModel);
+        if (bucket == null) {
+            return "unavailable";
+        }
+        String windows = bucket.windows.stream()
+            .sorted(Comparator.comparingInt(WindowSnapshot::windowMinutes))
+            .map(window -> window.windowMinutes + "=" + window.remainingPercent())
+            .reduce((left, right) -> left + "," + right)
+            .orElse("");
+        return bucket.updatedAtMillis + "|" + bucket.limitId + "|" + windows;
+    }
+
+    private static RateLimitBucket parseBucket(String mapKey, String object, long snapshotUpdatedAt) {
         if (object == null) {
             return null;
         }
@@ -394,7 +424,14 @@ public final class CodexUsageLimitPatchSupport {
             return null;
         }
         String reachedType = parseString(object, "rateLimitReachedType");
-        return new RateLimitBucket(limitId, limitName, windows, reachedType != null && !reachedType.isBlank());
+        Long bucketUpdatedAt = parseLong(object, "_jetbrainsUpdatedAt");
+        return new RateLimitBucket(
+            limitId,
+            limitName,
+            windows,
+            reachedType != null && !reachedType.isBlank(),
+            bucketUpdatedAt == null || bucketUpdatedAt <= 0L ? snapshotUpdatedAt : bucketUpdatedAt
+        );
     }
 
     private static WindowSnapshot parseWindow(String object) {
@@ -791,7 +828,8 @@ public final class CodexUsageLimitPatchSupport {
         String limitId,
         String limitName,
         List<WindowSnapshot> windows,
-        boolean limitReached
+        boolean limitReached,
+        long updatedAtMillis
     ) {
         private String label() {
             if (limitName != null && !limitName.isBlank()) {
@@ -860,7 +898,7 @@ public final class CodexUsageLimitPatchSupport {
         }
 
         private String buttonText() {
-            if (stale() || windows.isEmpty()) {
+            if (windows.isEmpty()) {
                 return "--% \u25BE";
             }
             return windows.stream()
@@ -871,14 +909,12 @@ public final class CodexUsageLimitPatchSupport {
         }
 
         private String tooltip() {
-            if (stale()) {
-                return "Codex limits are waiting for a fresh app-server snapshot.";
-            }
             String limits = windows.stream()
                 .map(window -> window.label() + ": " + percent(window.remainingPercent()) + " remaining")
                 .reduce((left, right) -> left + " \u00B7 " + right)
                 .orElse("No rate-limit windows");
-            return limits + (hasKnownModel() ? " \u00B7 " + modelLabel() : "");
+            String context = limits + (hasKnownModel() ? " \u00B7 " + modelLabel() : "");
+            return stale() ? context + " \u00B7 last known data" : context;
         }
 
         private boolean hasKnownModel() {

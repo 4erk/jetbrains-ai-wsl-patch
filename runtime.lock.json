@@ -1,35 +1,36 @@
 {
   "schema": 1,
   "codex": {
-    "version": "0.144.3",
-    "tag": "rust-v0.144.3",
+    "version": "0.144.5",
+    "tag": "rust-v0.144.5",
     "assets": {
       "windows-x64": {
         "name": "codex-x86_64-pc-windows-msvc.exe.zip",
-        "sha256": "5490114d8684b30f91e6e6f7b1238b2544fa3b957e42c9836aa959e8f563c01f"
+        "sha256": "c5fa9ad03f266640465da5677f2bcebd2db02a604940d1264b6a342d5136df91"
       },
       "windows-arm64": {
         "name": "codex-aarch64-pc-windows-msvc.exe.zip",
-        "sha256": "f30c2b4e98a910b145dc3c9b054a132ce6dd485f95d6add6bf12a119519df3b7"
+        "sha256": "e5f319f9f737605731aecf4208b7cda88df9ef0f98fa22c9935944bd7f267469"
       },
       "linux-x64": {
         "name": "codex-x86_64-unknown-linux-musl.tar.gz",
-        "sha256": "b9b4ae8e9b561c64dfbc5ef52c6319cba750ac87de3c7f55885026231e3aea89"
+        "sha256": "b6bea13bedf493232f6717714c45e783788c695cedcf37c344f73afc97b1ec9f"
       },
       "linux-arm64": {
         "name": "codex-aarch64-unknown-linux-musl.tar.gz",
-        "sha256": "dd76cfd5a2cf9bcf0e3224afe28e23065cfd27262e06e0ffbc8fa40343f0905a"
+        "sha256": "5433789cd66e0db3b78cccd218d894471ed9e92fe93465120d1356508952084d"
       }
     }
   },
   "acp": {
     "package": "@agentclientprotocol/codex-acp",
-    "version": "1.1.2",
+    "version": "1.1.4",
     "rateLimitBridge": {
       "snapshotFile": "jetbrains-rate-limits.json",
+      "backupSuffix": ".last-good",
       "refreshSeconds": 20,
-      "cleanSha256": "D05351BC8C47367969A340AC92B013F6FDCE538CDF89F38EC046847BD6C2EF84",
-      "patchedSha256": "B1AC86366055A87D5498AD40DD85DF1FC627BE5C4230F6456F960A6BB42AFBFB"
+      "cleanSha256": "7534A0AD3CC4C9AFFD0B2DA5007FA53EA0F1D6FCD71B2C5EF202E2056A976A97",
+      "patchedSha256": "8E4C82F8F95517BB6031EDFA1722683CE1A023AE4B30E93673ED45D4C25A0214"
     }
   },
   "node": {

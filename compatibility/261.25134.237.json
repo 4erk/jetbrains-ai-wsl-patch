@@ -10,24 +10,26 @@
     "runtime": {
       "path": "lib/ml-llm.jar",
       "sha256": "2724DE928D586250B191514A449CC4489260022BFDA34765C340CC39F05BF892",
-      "patchedSha256": "E24CF9E8EE1C1C26114759CF66C672BC906BB5274BE6DB1971272C19EE0F5531"
+      "patchedSha256": "599D80E5CE0BE7BFC09B95FF9B9158599D9D648B89D99108D30E7EF896CA93CB"
     },
     "chat": {
       "path": "lib/modules/intellij.ml.llm.chat.jar",
       "sha256": "EED4B76E546170838D687D8BC120A82CE412427E6AD1AE397793C4B7A1931691",
-      "patchedSha256": "DE24707FAFCBA253EAC53DDA66F38AAF09B98A428623E23230CD6260D9EEB9FF"
+      "patchedSha256": "F40EECF3A937F2E554B9F2AA93D065630053F957FB73B63C8D4740463DE9A036"
     },
     "frontend": {
       "path": "lib/modules/intellij.ml.llm.agents.frontend.jar",
       "sha256": "690444466F8CB0B789B638F9C35F07270D8FE9FCAA2105C90390505292AC5534",
-      "patchedSha256": "68BF2E30AD343EEDC74B039BAF2BEE77E86CA4AFACFCB774EEC9868DCAC0D114"
+      "patchedSha256": "B66400730AA706201D7B44B302429ACAF65C1FB37A81FAEDF94618C67E820EC7"
     }
   },
   "features": [
     "codex-runtime-routing",
     "wsl-file-navigation",
     "usage-limits-app-server",
-    "completion-sound"
+    "completion-sound",
+    "usage-limits-last-known-good",
+    "session-history-checkpoints"
   ],
-  "patchVersion": "1.1.0"
+  "patchVersion": "1.2.0"
 }

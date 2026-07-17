@@ -38,6 +38,16 @@ public final class PatchChatJar {
         "com/intellij/ml/llm/chat/notifications/AgentCompletionSoundPatchSupport";
     private static final String SOUND_HELPER_OWNER =
         "com/intellij/ml/llm/chat/notifications/AgentCompletionSoundPatchSupport";
+    private static final String HISTORY_STORAGE_ENTRY =
+        "com/intellij/ml/llm/chat/session/SessionHistoryStorage.class";
+    private static final String HISTORY_STORAGE_OWNER =
+        "com/intellij/ml/llm/chat/session/SessionHistoryStorage";
+    private static final String HISTORY_ID_DESC =
+        "Lcom/intellij/ml/llm/chat/session/SessionHistoryStorage$PersistanceId;";
+    private static final String HISTORY_HELPER_PREFIX =
+        "com/intellij/ml/llm/chat/session/SessionHistoryCheckpointPatchSupport";
+    private static final String HISTORY_HELPER_OWNER =
+        "com/intellij/ml/llm/chat/session/SessionHistoryCheckpointPatchSupport";
     private static final String PATCH_METADATA_ENTRY = "META-INF/jetbrains-ai-wsl-patch.properties";
 
     public static void main(String[] args) throws Exception {
@@ -52,9 +62,11 @@ public final class PatchChatJar {
 
         Map<String, byte[]> extraEntries = readClassFamily(compiledRoot, HELPER_PREFIX);
         extraEntries.putAll(readClassFamily(compiledRoot, SOUND_HELPER_PREFIX));
+        extraEntries.putAll(readClassFamily(compiledRoot, HISTORY_HELPER_PREFIX));
         extraEntries.put(PATCH_METADATA_ENTRY, Files.readAllBytes(Path.of(args[3])));
         boolean factoryPatched = false;
         boolean notificationServicePatched = false;
+        boolean historyStoragePatched = false;
 
         try (JarFile jarFile = new JarFile(inputJar.toFile());
              JarOutputStream jarOut = new JarOutputStream(Files.newOutputStream(outputJar))) {
@@ -76,12 +88,20 @@ public final class PatchChatJar {
                 } else if (NOTIFICATION_SERVICE_ENTRY.equals(entry.getName())) {
                     data = patchChatNotificationService(data);
                     notificationServicePatched = true;
+                } else if (HISTORY_STORAGE_ENTRY.equals(entry.getName())) {
+                    data = patchSessionHistoryStorage(data);
+                    historyStoragePatched = true;
                 } else if (entry.getName().startsWith(HELPER_PREFIX) && entry.getName().endsWith(".class")) {
                     byte[] replacement = extraEntries.remove(entry.getName());
                     if (replacement != null) {
                         data = replacement;
                     }
                 } else if (entry.getName().startsWith(SOUND_HELPER_PREFIX) && entry.getName().endsWith(".class")) {
+                    byte[] replacement = extraEntries.remove(entry.getName());
+                    if (replacement != null) {
+                        data = replacement;
+                    }
+                } else if (entry.getName().startsWith(HISTORY_HELPER_PREFIX) && entry.getName().endsWith(".class")) {
                     byte[] replacement = extraEntries.remove(entry.getName());
                     if (replacement != null) {
                         data = replacement;
@@ -113,8 +133,11 @@ public final class PatchChatJar {
         if (!notificationServicePatched) {
             throw new IllegalStateException("Failed to patch " + NOTIFICATION_SERVICE_ENTRY);
         }
+        if (!historyStoragePatched) {
+            throw new IllegalStateException("Failed to patch " + HISTORY_STORAGE_ENTRY);
+        }
 
-        System.out.println("Patched chat input usage limit button and focused completion sound.");
+        System.out.println("Patched usage limits, session checkpoints, and focused completion sound.");
     }
 
     private static Map<String, byte[]> readClassFamily(Path compiledRoot, String entryPrefix) throws IOException {
@@ -265,6 +288,93 @@ public final class PatchChatJar {
         return writer.toByteArray();
     }
 
+    private static byte[] patchSessionHistoryStorage(byte[] classBytes) {
+        ClassNode classNode = new ClassNode();
+        new ClassReader(classBytes).accept(classNode, 0);
+
+        int recordHooks = 0;
+        int lifecycleHooks = 0;
+        for (MethodNode method : classNode.methods) {
+            boolean eventRecordMethod = "recordEvent".equals(method.name)
+                && ("(" + HISTORY_ID_DESC + "Lcom/intellij/ml/llm/chat/shared/ChatSessionMessageEvent;)V").equals(method.desc);
+            if (eventRecordMethod) {
+                if (!hasHistoryHelperCall(method, "beforeRecord")) {
+                    InsnList hook = new InsnList();
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 2));
+                    hook.add(new MethodInsnNode(
+                        Opcodes.INVOKESTATIC,
+                        HISTORY_HELPER_OWNER,
+                        "beforeRecord",
+                        "(L" + HISTORY_STORAGE_OWNER + ";" + HISTORY_ID_DESC
+                            + "Lcom/intellij/ml/llm/chat/shared/ChatSessionMessageEvent;)V",
+                        false
+                    ));
+                    method.instructions.insert(hook);
+                }
+                recordHooks++;
+                continue;
+            }
+
+            boolean checkpointRecordMethod = "recordCheckpoint".equals(method.name)
+                && ("(" + HISTORY_ID_DESC + "Lcom/intellij/ml/llm/chat/session/ChatSessionCheckpointEvent;)V").equals(method.desc);
+            if (checkpointRecordMethod) {
+                if (!hasHistoryHelperCall(method, "afterCheckpoint")) {
+                    for (var insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                        if (insn.getOpcode() != Opcodes.RETURN) {
+                            continue;
+                        }
+                        InsnList hook = new InsnList();
+                        hook.add(new VarInsnNode(Opcodes.ALOAD, 0));
+                        hook.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                        hook.add(new MethodInsnNode(
+                            Opcodes.INVOKESTATIC,
+                            HISTORY_HELPER_OWNER,
+                            "afterCheckpoint",
+                            "(L" + HISTORY_STORAGE_OWNER + ";" + HISTORY_ID_DESC + ")V",
+                            false
+                        ));
+                        method.instructions.insertBefore(insn, hook);
+                    }
+                }
+                recordHooks++;
+                continue;
+            }
+
+            boolean lifecycleMethod = ("flush".equals(method.name)
+                || "remove".equals(method.name)
+                || "clean".equals(method.name))
+                && ("(" + HISTORY_ID_DESC + ")V").equals(method.desc);
+            if (lifecycleMethod) {
+                if (!hasHistoryHelperCall(method, "onFlush")) {
+                    InsnList hook = new InsnList();
+                    hook.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                    hook.add(new MethodInsnNode(
+                        Opcodes.INVOKESTATIC,
+                        HISTORY_HELPER_OWNER,
+                        "onFlush",
+                        "(" + HISTORY_ID_DESC + ")V",
+                        false
+                    ));
+                    method.instructions.insert(hook);
+                }
+                lifecycleHooks++;
+            }
+        }
+
+        if (recordHooks != 2) {
+            throw new IllegalStateException("Expected two SessionHistoryStorage record hooks, found " + recordHooks);
+        }
+        if (lifecycleHooks != 3) {
+            throw new IllegalStateException("Expected three SessionHistoryStorage lifecycle hooks, found " + lifecycleHooks);
+        }
+
+        ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        classNode.accept(writer);
+        return writer.toByteArray();
+    }
+
     private static boolean hasInstallCall(MethodNode method) {
         for (var insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
             if (!(insn instanceof MethodInsnNode methodInsn)) {
@@ -287,6 +397,17 @@ public final class PatchChatJar {
             if (SOUND_HELPER_OWNER.equals(methodInsn.owner)
                 && "playIfFocused".equals(methodInsn.name)
                 && "(ZLcom/intellij/ml/llm/chat/shared/ChatSessionNotificationType;)V".equals(methodInsn.desc)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasHistoryHelperCall(MethodNode method, String name) {
+        for (var insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn instanceof MethodInsnNode methodInsn
+                && HISTORY_HELPER_OWNER.equals(methodInsn.owner)
+                && name.equals(methodInsn.name)) {
                 return true;
             }
         }

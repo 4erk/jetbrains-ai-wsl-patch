@@ -6,7 +6,7 @@
 
 - `ml-llm.jar`: нормализация `AcpAgentStartConfig` непосредственно перед `AcpProcessLauncher.startProcess`;
 - `intellij.ml.llm.agents.frontend.jar`: открытие Linux absolute paths через WSL VFS;
-- `intellij.ml.llm.chat.jar`: usage-limit control и звук завершения при активном окне.
+- `intellij.ml.llm.chat.jar`: usage-limit control, bounded session-history checkpoints и звук завершения при активном окне.
 
 Каждый patcher проверяет конкретный class/method/call shape и завершает сборку с ошибкой, если hook отсутствует или неоднозначен. Compatibility manifest дополнительно фиксирует чистые SHA-256 всех трёх JAR.
 
@@ -38,9 +38,15 @@ Manifest содержит Windows paths и набор WSL paths с ключом,
 
 ## Usage telemetry
 
-ACP bridge использует стабильный app-server RPC `account/rateLimits/read`. Сразу после ACP `initialize` и далее каждые 20 секунд он сохраняет полный response в `jetbrains-rate-limits.json` активного `CODEX_HOME`. Трансформация `codex-acp` привязана к clean/patched SHA-256 в `runtime.lock.json` и останавливается при неизвестном bundle.
+ACP bridge использует стабильный app-server RPC `account/rateLimits/read`. Сразу после ACP `initialize` и далее каждые 20 секунд он сохраняет валидный response в `jetbrains-rate-limits.json` активного `CODEX_HOME`. Предыдущее валидное поколение хранится в `jetbrains-rate-limits.json.last-good`; пустой response не меняет оба файла, а partial response объединяется с известными buckets. Трансформация `codex-acp` привязана к clean/patched SHA-256 в `runtime.lock.json` и останавливается при неизвестном bundle.
 
-Java UI читает только этот JSON snapshot из Codex home активной project environment. Windows и WSL telemetry не смешиваются. Snapshot старше 75 секунд считается stale и скрывается, а не выдается за актуальный. Окна сортируются по `windowDurationMins`; именованные buckets сопоставляются с выбранной моделью по `limitName`, default bucket определяется по `limitId=codex`. SQLite/WAL не является API и больше не используется.
+Java UI читает самое новое валидное поколение из Codex home активной project environment. Windows и WSL telemetry не смешиваются. Snapshot старше 75 секунд помечается как stale, но его проценты остаются видимыми как last-known data. Окна сортируются по `windowDurationMins`; именованные buckets сопоставляются с выбранной моделью по `limitName`, default bucket определяется по `limitId=codex`. SQLite/WAL не является API и больше не используется.
+
+## Session history checkpoints
+
+JetBrains `SessionHistoryStorage` собирает события активной задачи в памяти и штатно append-записывает их перед стартом и после завершения задачи. Patch hook вызывает тот же `flush` синхронно из последовательного event pipeline после 30 секунд dirty-state или 256 обновлений на следующей границе `eventId`; agent checkpoint также считается безопасной границей. Это не создаёт повторных IDs при разрезании потокового Markdown/terminal block. После append штатный pending batch удаляется.
+
+Checkpoint не запускает фонового таймера, не работает при отсутствии новых событий, не копирует существующий `.events` и не меняет формат истории. Полный журнал остаётся доступен штатному reader. Уже отображённая frontend-модель длинного чата не выгружается: её безопасное ограничение требует отдельного протокола pagination/load-older, а не удаления событий из backend history.
 
 ## Supply chain
 

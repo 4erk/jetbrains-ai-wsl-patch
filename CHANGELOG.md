@@ -2,6 +2,20 @@
 
 Все существенные изменения проекта фиксируются здесь. Версии следуют Semantic Versioning.
 
+## [1.2.0] - 2026-07-17
+
+### Added
+
+- Last-known-good rate-limit generation for interrupted, empty, or partial app-server refreshes.
+- Event-driven session-history checkpoints after 30 active seconds or 256 pending updates at the next safe event boundary.
+- Executable tests for ACP snapshot rotation, partial-bucket merge, and checkpoint policy.
+
+### Changed
+
+- Stale but valid quota values remain visible with an explicit age warning instead of becoming `--%`.
+- Active session events are appended through the native `SessionHistoryStorage` and released from its pending buffer without rewriting or truncating history files.
+- Pinned Codex CLI was updated to `0.144.5` and ACP to `1.1.4` after clean-hash and bridge compatibility verification.
+
 ## [1.1.0] - 2026-07-13
 
 ### Added

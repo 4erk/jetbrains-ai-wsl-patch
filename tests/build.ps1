@@ -14,6 +14,7 @@ $output = Join-Path $repoRoot '.build\test-patched'
 $expected = @(
     @('lib\ml-llm.jar', 'com/intellij/ml/llm/agents/acp/process/CodexRuntimePatchSupport.class'),
     @('lib\modules\intellij.ml.llm.chat.jar', 'com/intellij/ml/llm/core/chat/ui/chat/CodexUsageLimitPatchSupport.class'),
+    @('lib\modules\intellij.ml.llm.chat.jar', 'com/intellij/ml/llm/chat/session/SessionHistoryCheckpointPatchSupport.class'),
     @('lib\modules\intellij.ml.llm.agents.frontend.jar', 'com/intellij/ml/llm/agents/frontend/compose/ui/components/utils/MarkdownWslLinkPatchSupport.class')
 )
 foreach ($item in $expected) {
@@ -37,7 +38,7 @@ $java = Join-Path $IdeHome 'jbr\bin\java.exe'
 $testClasses = Join-Path $repoRoot '.build\classes\test'
 Remove-Item -LiteralPath $testClasses -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $testClasses -Force | Out-Null
-$testSource = Join-Path $repoRoot 'tests\java\com\intellij\ml\llm\core\chat\ui\chat\CodexUsageLimitPatchSupportTest.java'
+$testSources = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tests\java') -Recurse -Filter '*Test.java'
 $classpath = @(
     (Join-Path $repoRoot '.build\classes\main')
     (Join-Path $PluginRoot 'lib\*')
@@ -48,9 +49,8 @@ $testArgs = Join-Path $repoRoot '.build\javac-test.args'
 [IO.File]::WriteAllLines($testArgs, @(
     '-encoding', 'UTF-8',
     '-cp', ('"{0}"' -f $classpath.Replace('\', '/')),
-    '-d', ('"{0}"' -f $testClasses.Replace('\', '/')),
-    ('"{0}"' -f $testSource.Replace('\', '/'))
-), [Text.UTF8Encoding]::new($false))
+    '-d', ('"{0}"' -f $testClasses.Replace('\', '/'))
+) + @($testSources.FullName | ForEach-Object { '"{0}"' -f $_.Replace('\', '/') }), [Text.UTF8Encoding]::new($false))
 & $javac "@$testArgs"
 if ($LASTEXITCODE -ne 0) {
     throw "Usage-limit parser test compilation failed with exit code $LASTEXITCODE"
@@ -58,5 +58,9 @@ if ($LASTEXITCODE -ne 0) {
 & $java -cp "$testClasses;$classpath" com.intellij.ml.llm.core.chat.ui.chat.CodexUsageLimitPatchSupportTest
 if ($LASTEXITCODE -ne 0) {
     throw "Usage-limit parser tests failed with exit code $LASTEXITCODE"
+}
+& $java -cp "$testClasses;$classpath" com.intellij.ml.llm.chat.session.SessionHistoryCheckpointPatchSupportTest
+if ($LASTEXITCODE -ne 0) {
+    throw "Session checkpoint policy tests failed with exit code $LASTEXITCODE"
 }
 Write-Output 'Build test passed.'

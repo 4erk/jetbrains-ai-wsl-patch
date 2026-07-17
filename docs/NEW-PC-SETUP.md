@@ -1,6 +1,6 @@
 # Перенос IntelliJ IDEA на новый компьютер
 
-Инструкция фиксирует проверенный baseline текущего компьютера на 14 июля 2026 года. Цель переноса: получить ту же IntelliJ IDEA, плагины, настройки, WSL-проекты и Codex ACP без копирования кэшей и без повторного использования несовместимых пропатченных JAR.
+Инструкция фиксирует проверенный baseline текущего компьютера на 17 июля 2026 года. Цель переноса: получить ту же IntelliJ IDEA, плагины, настройки, WSL-проекты и Codex ACP без копирования кэшей и без повторного использования несовместимых пропатченных JAR.
 
 Текущий baseline находится в [workstation/current-baseline.json](workstation/current-baseline.json).
 
@@ -9,9 +9,9 @@
 - IntelliJ IDEA Ultimate `2026.1.3`, build `261.25134.95`.
 - Профиль `IntelliJIdea2026.1`.
 - JetBrains AI Assistant `261.25134.237`.
-- JetBrains AI WSL Patch `1.1.0`, tag `jbai-261.25134.237-patch-1.1.0`.
+- JetBrains AI WSL Patch `1.2.0`, tag `jbai-261.25134.237-patch-1.2.0`.
 - WSL 2 distribution `Ubuntu`, пользователь `4erk`, home `/home/4erk`.
-- Codex CLI `0.144.3`, Codex ACP `1.1.2`, Node `24.13.0`.
+- Codex CLI `0.144.5`, Codex ACP `1.1.4`, Node `24.13.0`.
 
 Для воспроизводимого переноса сначала устанавливайте именно этот baseline. Обновлять IDEA или JetBrains AI следует только после того, как репозиторий патча содержит compatibility manifest для новой версии.
 
@@ -291,7 +291,7 @@ Get-ChildItem -LiteralPath (Join-Path $codexStage 'windows-codex-state') -Force 
 ```powershell
 git clone git@github.com:4erk/jetbrains-ai-wsl-patch.git
 Set-Location jetbrains-ai-wsl-patch
-git checkout jbai-261.25134.237-patch-1.1.0
+git checkout jbai-261.25134.237-patch-1.2.0
 
 .\scripts\install.ps1 `
   -IdeHome 'C:\Program Files\JetBrains\IntelliJ IDEA 2026.1.3' `
@@ -349,7 +349,7 @@ command -v codex
 codex --version
 ```
 
-Ожидается пользователь `4erk`, Linux project path, Linux Codex из IDE-specific runtime и версия `0.144.3`.
+Ожидается пользователь `4erk`, Linux project path, Linux Codex из IDE-specific runtime и версия `0.144.5`.
 
 5. В Windows-проекте проверьте, что запускается Windows Codex, а не WSL binary.
 6. Проверьте кликабельную ссылку `/home/4erk/.../file`.

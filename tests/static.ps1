@@ -53,6 +53,7 @@ foreach ($file in $jsonFiles) {
             }
             Assert-True ([string]$parsed.acp.rateLimitBridge.cleanSha256 -match '^[A-Fa-f0-9]{64}$') 'ACP bridge clean SHA-256 is missing.'
             Assert-True ([string]$parsed.acp.rateLimitBridge.patchedSha256 -match '^[A-Fa-f0-9]{64}$') 'ACP bridge patched SHA-256 is missing.'
+            Assert-True ([string]$parsed.acp.rateLimitBridge.backupSuffix -eq '.last-good') 'ACP bridge backup suffix must remain .last-good.'
             Assert-True ([int]$parsed.acp.rateLimitBridge.refreshSeconds -eq 20) 'ACP bridge refresh interval must remain 20 seconds.'
         } elseif ($file.Name -eq 'current-baseline.json') {
             $repositoryVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
@@ -89,6 +90,7 @@ foreach ($legacy in @(
 Assert-True ($sourceText.IndexOf('return if (', [StringComparison]::OrdinalIgnoreCase) -lt 0) 'Invalid PowerShell return-if expression found.'
 Assert-True ($sourceText.IndexOf('logs_2.sqlite', [StringComparison]::OrdinalIgnoreCase) -lt 0) 'SQLite telemetry scraping is still referenced by source.'
 Assert-True ($sourceText.IndexOf('account/rateLimits/read', [StringComparison]::Ordinal) -ge 0) 'App-server rate-limit RPC is not referenced by source.'
+Assert-True ($sourceText.IndexOf('SessionHistoryCheckpointPatchSupport', [StringComparison]::Ordinal) -ge 0) 'Session history checkpoint helper is not referenced by source.'
 
 $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
 Assert-True ($version -match '^\d+\.\d+\.\d+$') "VERSION is not semantic: $version"

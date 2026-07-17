@@ -174,6 +174,7 @@ $windowsAcp = [string]$runtime['WINDOWS_ACP_ENTRY']
 $windowsCodex = [string]$runtime['WINDOWS_CODEX']
 $windowsCodexHome = [string]$runtime['WINDOWS_CODEX_HOME']
 $windowsSnapshotPath = if ($windowsCodexHome) { Join-Path $windowsCodexHome ([string]$lock.acp.rateLimitBridge.snapshotFile) } else { $null }
+$windowsSnapshotBackupPath = if ($windowsSnapshotPath) { $windowsSnapshotPath + [string]$lock.acp.rateLimitBridge.backupSuffix } else { $null }
 $windowsAcpHash = if ($windowsAcp -and (Test-Path -LiteralPath $windowsAcp -PathType Leaf)) { (Get-FileHash -LiteralPath $windowsAcp -Algorithm SHA256).Hash } else { $null }
 $windowsStatus = [ordered]@{
     node = Invoke-Version -Command $windowsNode -Arguments @('--version')
@@ -186,6 +187,7 @@ $windowsStatus = [ordered]@{
         integrity = [bool]($windowsAcpHash -eq [string]$lock.acp.rateLimitBridge.patchedSha256)
     }
     rateLimitSnapshot = Get-RateLimitSnapshotStatus -Path $windowsSnapshotPath
+    rateLimitSnapshotBackup = Get-RateLimitSnapshotStatus -Path $windowsSnapshotBackupPath
 }
 
 $wslStatus = $null
@@ -197,6 +199,7 @@ if ($wsl) {
     $wslCodex = [string]$runtime["${prefix}CODEX"]
     $wslCodexHome = [string]$runtime["${prefix}CODEX_HOME"]
     $wslSnapshotPath = "$wslCodexHome/$($lock.acp.rateLimitBridge.snapshotFile)"
+    $wslSnapshotBackupPath = "$wslSnapshotPath$($lock.acp.rateLimitBridge.backupSuffix)"
     $wslAcpHash = Invoke-WslSha256 -Wsl $wsl -Path $wslAcp
     $wslSnapshotJson = $null
     try {
@@ -204,6 +207,13 @@ if ($wsl) {
     }
     catch {
         $wslSnapshotJson = $null
+    }
+    $wslSnapshotBackupJson = $null
+    try {
+        $wslSnapshotBackupJson = ((& wsl.exe -d $wsl.Distribution -u $wsl.User -- cat $wslSnapshotBackupPath 2>$null) -join "`n")
+    }
+    catch {
+        $wslSnapshotBackupJson = $null
     }
     $wslStatus = [ordered]@{
         distribution = $wsl.Distribution
@@ -218,6 +228,7 @@ if ($wsl) {
             integrity = [bool]($wslAcpHash -eq [string]$lock.acp.rateLimitBridge.patchedSha256)
         }
         rateLimitSnapshot = Get-RateLimitSnapshotStatus -Path $wslSnapshotPath -Json $wslSnapshotJson
+        rateLimitSnapshotBackup = Get-RateLimitSnapshotStatus -Path $wslSnapshotBackupPath -Json $wslSnapshotBackupJson
     }
 }
 

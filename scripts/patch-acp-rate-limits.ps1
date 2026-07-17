@@ -54,42 +54,108 @@ $bridgePrelude = @'
 // jetbrains-ai-wsl-patch: structured Codex rate-limit bridge
 import {
   mkdir as codexRateLimitMkdir,
+  readFile as codexRateLimitRead,
   rename as codexRateLimitRename,
   rm as codexRateLimitRemove,
   writeFile as codexRateLimitWrite
 } from "node:fs/promises";
 var CODEX_RATE_LIMIT_REFRESH_MS = 2e4;
 var CODEX_RATE_LIMIT_SNAPSHOT_FILE = "jetbrains-rate-limits.json";
+var CODEX_RATE_LIMIT_BACKUP_SUFFIX = ".last-good";
+function isValidCodexRateLimitWindow(window) {
+  return window != null && Number.isFinite(window.usedPercent) && Number.isFinite(window.windowDurationMins) && window.windowDurationMins > 0;
+}
+function isValidCodexRateLimitBucket(bucket) {
+  return bucket != null && (isValidCodexRateLimitWindow(bucket.primary) || isValidCodexRateLimitWindow(bucket.secondary));
+}
+function collectValidCodexRateLimitBuckets(result) {
+  const buckets = {};
+  for (const [key, bucket] of Object.entries(result?.rateLimitsByLimitId ?? {})) {
+    if (isValidCodexRateLimitBucket(bucket)) buckets[key] = bucket;
+  }
+  if (isValidCodexRateLimitBucket(result?.rateLimits)) {
+    const key = result.rateLimits.limitId?.trim() || "codex";
+    buckets[key] = result.rateLimits;
+  }
+  return buckets;
+}
+function normalizeCodexRateLimitSnapshot(previous, result) {
+  const incoming = collectValidCodexRateLimitBuckets(result);
+  if (Object.keys(incoming).length === 0) return null;
+  const updatedAt = Date.now();
+  const incomingBuckets = Object.fromEntries(
+    Object.entries(incoming).map(([key, bucket]) => [key, { ...bucket, _jetbrainsUpdatedAt: updatedAt }])
+  );
+  const previousBuckets = collectValidCodexRateLimitBuckets(previous);
+  const mergedBuckets = { ...previousBuckets, ...incomingBuckets };
+  const defaultLimitId = isValidCodexRateLimitBucket(result?.rateLimits)
+    ? result.rateLimits.limitId?.trim() || "codex"
+    : null;
+  const defaultBucket = defaultLimitId !== null
+    ? mergedBuckets[defaultLimitId]
+    : mergedBuckets.codex ?? (isValidCodexRateLimitBucket(previous?.rateLimits) ? previous.rateLimits : null);
+  return {
+    ...(previous ?? {}),
+    ...result,
+    schema: 2,
+    updatedAt,
+    source: "account/rateLimits/read",
+    rateLimits: defaultBucket,
+    rateLimitsByLimitId: mergedBuckets
+  };
+}
+async function readCodexRateLimitSnapshot(target, backup) {
+  let best = null;
+  for (const path of [target, backup]) {
+    try {
+      const candidate = JSON.parse(await codexRateLimitRead(path, "utf8"));
+      if (Object.keys(collectValidCodexRateLimitBuckets(candidate)).length === 0) continue;
+      if (best === null || Number(candidate.updatedAt ?? 0) > Number(best.updatedAt ?? 0)) best = candidate;
+    } catch {
+      // A missing or partially written generation is ignored in favor of the other one.
+    }
+  }
+  return best;
+}
 async function writeCodexRateLimitSnapshot(result) {
   const codexHome = process.env["CODEX_HOME"]?.trim();
   if (!codexHome) return;
   await codexRateLimitMkdir(codexHome, { recursive: true });
   const target = `${codexHome}/${CODEX_RATE_LIMIT_SNAPSHOT_FILE}`;
-  const temporary = `${target}.tmp-${process.pid}`;
-  const payload = JSON.stringify({
-    schema: 1,
-    updatedAt: Date.now(),
-    source: "account/rateLimits/read",
-    ...result
-  });
+  const backup = `${target}${CODEX_RATE_LIMIT_BACKUP_SUFFIX}`;
+  const previous = await readCodexRateLimitSnapshot(target, backup);
+  const snapshot = normalizeCodexRateLimitSnapshot(previous, result);
+  if (snapshot === null) return;
+  const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
+  const payload = JSON.stringify(snapshot);
   await codexRateLimitWrite(temporary, payload, "utf8");
+  let rotated = false;
   try {
+    await codexRateLimitRemove(backup, { force: true });
+    try {
+      await codexRateLimitRename(target, backup);
+      rotated = true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
     await codexRateLimitRename(temporary, target);
   } catch (error) {
-    if (error?.code !== "EEXIST" && error?.code !== "EPERM") throw error;
-    await codexRateLimitRemove(target, { force: true });
-    await codexRateLimitRename(temporary, target);
+    if (rotated) {
+      await codexRateLimitRemove(target, { force: true }).catch(() => {});
+      await codexRateLimitRename(backup, target).catch(() => {});
+    }
+    throw error;
   } finally {
     await codexRateLimitRemove(temporary, { force: true }).catch(() => {});
   }
 }
 
 '@
-$codexClientMarker = "// src/CodexAcpClient.ts`nvar CodexAcpClient = class {"
+$codexClientMarker = 'var CodexAcpClient = class {'
 $text = Replace-ExactlyOnce -Text $text `
     -Needle $codexClientMarker `
     -Replacement ($bridgePrelude + $codexClientMarker) `
-    -Description 'CodexAcpClient prelude'
+    -Description 'CodexAcpClient class'
 
 $text = Replace-ExactlyOnce -Text $text `
     -Needle '  skillExtraRoots = [];' `
