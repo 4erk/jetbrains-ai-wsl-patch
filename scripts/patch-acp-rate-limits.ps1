@@ -163,12 +163,12 @@ $text = Replace-ExactlyOnce -Text $text `
     -Description 'CodexAcpClient fields'
 
 $initializeNeedle = @'
-    });
+    this.configPath = response?.codexHome ?? null;
   }
-  async authenticate(authRequest) {
+  getHomePath() {
 '@
 $initializeReplacement = @'
-    });
+    this.configPath = response?.codexHome ?? null;
     this.startRateLimitBridge();
   }
   startRateLimitBridge() {
@@ -189,7 +189,7 @@ $initializeReplacement = @'
     this.rateLimitBridgeTimer = setInterval(refresh, CODEX_RATE_LIMIT_REFRESH_MS);
     this.rateLimitBridgeTimer.unref?.();
   }
-  async authenticate(authRequest) {
+  getHomePath() {
 '@
 $text = Replace-ExactlyOnce -Text $text `
     -Needle $initializeNeedle `

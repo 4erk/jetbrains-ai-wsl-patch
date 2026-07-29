@@ -94,6 +94,57 @@ function Get-RateLimitSnapshotStatus {
     return $result
 }
 
+function Get-HistoryCacheStatus {
+    param([Parameter(Mandatory)][string]$Profile)
+
+    $directory = Join-Path $env:APPDATA "JetBrains\$Profile\aia-task-history"
+    $result = [ordered]@{
+        directory = $directory
+        rawFiles = 0
+        rawMiB = 0
+        largeRawFiles = 0
+        cacheFiles = 0
+        validCaches = 0
+        staleCaches = 0
+        cacheMiB = 0
+    }
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return $result
+    }
+
+    $rawFiles = @(Get-ChildItem -LiteralPath $directory -Filter '*.events' -File)
+    $cacheFiles = @(Get-ChildItem -LiteralPath $directory -Filter '*.ui-cache-v2' -File)
+    $result.rawFiles = $rawFiles.Count
+    $result.rawMiB = [Math]::Round((($rawFiles | Measure-Object Length -Sum).Sum / 1MB), 2)
+    $result.largeRawFiles = @($rawFiles | Where-Object Length -ge 8MB).Count
+    $result.cacheFiles = $cacheFiles.Count
+    $result.cacheMiB = [Math]::Round((($cacheFiles | Measure-Object Length -Sum).Sum / 1MB), 2)
+
+    foreach ($cache in $cacheFiles) {
+        try {
+            $header = Get-Content -LiteralPath $cache.FullName -TotalCount 1
+            $fields = $header -split "`t"
+            $sessionName = $cache.Name.Substring(0, $cache.Name.Length - '.ui-cache-v2'.Length)
+            $raw = Join-Path $directory "$sessionName.events"
+            $rawItem = if (Test-Path -LiteralPath $raw -PathType Leaf) { Get-Item -LiteralPath $raw } else { $null }
+            $valid = $fields.Count -ge 3 `
+                -and $fields[0] -eq 'JBAI_UI_CACHE_V2' `
+                -and $null -ne $rawItem `
+                -and [long]$fields[1] -eq $rawItem.Length `
+                -and [long]$fields[2] -eq ([DateTimeOffset]$rawItem.LastWriteTimeUtc).ToUnixTimeMilliseconds()
+            if ($valid) {
+                $result.validCaches++
+            } else {
+                $result.staleCaches++
+            }
+        }
+        catch {
+            $result.staleCaches++
+        }
+    }
+    return $result
+}
+
 $repoRoot = Get-RepositoryRoot
 $context = Resolve-JetBrainsContext -IdeHome $IdeHome -Profile $Profile
 $lock = Get-Content -LiteralPath (Join-Path $repoRoot 'runtime.lock.json') -Raw | ConvertFrom-Json
@@ -233,6 +284,7 @@ if ($wsl) {
 }
 
 $allPatched = @($jarStatus.Values | Where-Object { -not $_.patched }).Count -eq 0 -and $integrity
+$history = Get-HistoryCacheStatus -Profile $context.Profile
 $result = [ordered]@{
     patchVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
     ide = [ordered]@{
@@ -257,6 +309,7 @@ $result = [ordered]@{
         acp = [string]$lock.acp.version
     }
     runtimeManifest = $manifestPath
+    history = $history
     windows = $windowsStatus
     wsl = $wslStatus
 }

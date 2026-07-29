@@ -35,13 +35,6 @@ public final class SessionHistoryCheckpointPatchSupportTest {
         ));
 
         SessionHistoryCheckpointPatchSupport.resetForTest();
-        assertFalse(SessionHistoryCheckpointPatchSupport.shouldFlushBefore(timeSession, 30, 100L));
-        assertTrue(SessionHistoryCheckpointPatchSupport.shouldFlushAtCheckpoint(
-            timeSession,
-            100L + SessionHistoryCheckpointPatchSupport.MAX_DIRTY_NANOS
-        ));
-
-        SessionHistoryCheckpointPatchSupport.resetForTest();
         assertFalse(SessionHistoryCheckpointPatchSupport.shouldFlushBefore(timeSession, 40, 100L));
         SessionHistoryCheckpointPatchSupport.onFlushForTest(timeSession);
         assertFalse(SessionHistoryCheckpointPatchSupport.shouldFlushBefore(

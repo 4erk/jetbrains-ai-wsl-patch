@@ -2,6 +2,22 @@
 
 Все существенные изменения проекта фиксируются здесь. Версии следуют Semantic Versioning.
 
+## [1.3.0] - 2026-07-29
+
+### Added
+
+- Atomic, invalidating UI caches for session histories larger than 8 MiB.
+- Installer prebuild and typed validation for large-history caches.
+- History cache health and size reporting in `scripts/status.ps1`.
+- Safe upgrade from an older patch using a verified clean JAR backup.
+
+### Changed
+
+- Usage-limit controls are permanently bound to their owning project instead of the globally active IDE window.
+- Long-chat replay keeps all prompts and assistant Markdown, deduplicates persisted event IDs, retains the latest 600 events, and bounds heavy terminal/diff payloads.
+- Session checkpoint flushes only at an event-ID transition; the unsafe agent-checkpoint flush was removed.
+- Pinned Codex CLI was updated to `0.146.0` and ACP to `1.1.7`; the rate-limit bridge was ported to the new ACP initialize lifecycle.
+
 ## [1.2.0] - 2026-07-17
 
 ### Added

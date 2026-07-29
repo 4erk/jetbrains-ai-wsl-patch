@@ -5,7 +5,8 @@ param(
     [string]$WslDistribution,
     [string]$WslUser,
     [switch]$SkipWsl,
-    [switch]$SkipRuntime
+    [switch]$SkipRuntime,
+    [switch]$SkipHistoryCache
 )
 
 $ErrorActionPreference = 'Stop'
@@ -72,12 +73,12 @@ function Get-PluginPatchState {
             $properties[$parts[0]] = $parts[1]
         }
     }
-    if ([string]$properties['patchVersion'] -ne $ExpectedPatchVersion) {
-        throw "JetBrains AI contains patch $($properties['patchVersion']); restore clean JARs before installing $ExpectedPatchVersion."
-    }
     $pluginVersion = Get-PluginVersionFromJar -JarPath (Join-Path $PluginRoot 'lib\ml-llm.jar')
     if ([string]$properties['pluginVersion'] -ne $pluginVersion) {
         throw "Patch metadata targets $($properties['pluginVersion']), but the plugin is $pluginVersion."
+    }
+    if ([string]$properties['patchVersion'] -ne $ExpectedPatchVersion) {
+        return 'previous'
     }
     return 'current'
 }
@@ -97,6 +98,72 @@ function Assert-PatchedPluginIntegrity {
         if (-not $jar.patchedSha256 -or $actual -ne [string]$jar.patchedSha256) {
             throw "Patched JAR integrity check failed for $($jar.path). Expected $($jar.patchedSha256), got $actual."
         }
+    }
+}
+
+function Invoke-HistoryCachePreparation {
+    param(
+        [Parameter(Mandatory)][string]$PluginRoot,
+        [Parameter(Mandatory)]$Context
+    )
+
+    $historyDirectory = Join-Path $env:APPDATA "JetBrains\$($Context.Profile)\aia-task-history"
+    if (-not (Test-Path -LiteralPath $historyDirectory -PathType Container)) {
+        return $null
+    }
+    $java = Join-Path $Context.IdeHome 'jbr\bin\java.exe'
+    $classpath = @(
+        (Join-Path $PluginRoot 'lib\*')
+        (Join-Path $PluginRoot 'lib\modules\*')
+        (Join-Path $Context.IdeHome 'lib\*')
+        (Join-Path $Context.IdeHome 'lib\intellij.libraries.gson.jar')
+    ) -join ';'
+    $output = & $java -Xmx512m -cp $classpath `
+        com.intellij.ml.llm.chat.session.SessionHistoryUiCachePatchSupport `
+        --prepare-all $historyDirectory
+    if ($LASTEXITCODE -ne 0) {
+        throw "Session history UI cache preparation failed with exit code $LASTEXITCODE"
+    }
+    return ($output | Select-Object -Last 1)
+}
+
+function Find-CleanPluginBackup {
+    param(
+        [Parameter(Mandatory)]$Compatibility,
+        [Parameter(Mandatory)][string]$BackupsRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $BackupsRoot -PathType Container)) {
+        return $null
+    }
+    foreach ($directory in Get-ChildItem -LiteralPath $BackupsRoot -Directory | Sort-Object Name -Descending) {
+        $matches = $true
+        foreach ($jar in @($Compatibility.jars.runtime, $Compatibility.jars.chat, $Compatibility.jars.frontend)) {
+            $candidate = Join-Path $directory.FullName ([string]$jar.path)
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne [string]$jar.sha256) {
+                $matches = $false
+                break
+            }
+        }
+        if ($matches) {
+            return $directory.FullName
+        }
+    }
+    return $null
+}
+
+function Restore-CleanPatchTargets {
+    param(
+        [Parameter(Mandatory)][string]$PluginRoot,
+        [Parameter(Mandatory)][string]$BackupRoot,
+        [Parameter(Mandatory)]$Compatibility
+    )
+
+    foreach ($jar in @($Compatibility.jars.runtime, $Compatibility.jars.chat, $Compatibility.jars.frontend)) {
+        $relative = [string]$jar.path
+        Copy-Item -LiteralPath (Join-Path $BackupRoot $relative) `
+            -Destination (Join-Path $PluginRoot $relative) -Force
     }
 }
 
@@ -133,11 +200,21 @@ if ($pluginTarget.Mode -eq 'pending-update') {
     }
 
     $runtimeJar = Join-Path $sourcePluginRoot 'lib\ml-llm.jar'
-    $alreadyPatched = (Get-PluginPatchState -PluginRoot $sourcePluginRoot -ExpectedPatchVersion $patchVersion) -eq 'current'
+    $patchState = Get-PluginPatchState -PluginRoot $sourcePluginRoot -ExpectedPatchVersion $patchVersion
+    $alreadyPatched = $patchState -eq 'current'
     if ($alreadyPatched) {
         $pluginVersion = Get-PluginVersionFromJar -JarPath $runtimeJar
         $compat = Get-Content -LiteralPath (Join-Path $repoRoot "compatibility\$pluginVersion.json") -Raw | ConvertFrom-Json
         Assert-PatchedPluginIntegrity -PluginRoot $sourcePluginRoot -Compatibility $compat
+    }
+    if ($patchState -eq 'previous') {
+        $pluginVersion = Get-PluginVersionFromJar -JarPath $runtimeJar
+        $compat = Get-Content -LiteralPath (Join-Path $repoRoot "compatibility\$pluginVersion.json") -Raw | ConvertFrom-Json
+        $cleanBackup = Find-CleanPluginBackup -Compatibility $compat -BackupsRoot (Join-Path $repoRoot '.state\backups')
+        if (-not $cleanBackup) {
+            throw "No verified clean backup is available to upgrade the existing patch. Reinstall JetBrains AI, then run the installer again."
+        }
+        Restore-CleanPatchTargets -PluginRoot $sourcePluginRoot -BackupRoot $cleanBackup -Compatibility $compat
     }
     if (-not $alreadyPatched) {
         & (Join-Path $PSScriptRoot 'build.ps1') -PluginRoot $sourcePluginRoot -IdeHome $context.IdeHome -OutputRoot $patchedRoot
@@ -158,17 +235,34 @@ if ($pluginTarget.Mode -eq 'pending-update') {
 else {
     $mode = 'installed-plugin'
     $targetPath = $context.PluginRoot
-    $sourcePluginRoot = $context.PluginRoot
+    $installedPluginRoot = $context.PluginRoot
+    $sourcePluginRoot = $installedPluginRoot
     if (-not (Test-Path -LiteralPath (Join-Path $sourcePluginRoot 'lib\ml-llm.jar'))) {
         throw "JetBrains AI plugin is not installed under $sourcePluginRoot"
     }
 
     $runtimeJar = Join-Path $sourcePluginRoot 'lib\ml-llm.jar'
-    $alreadyPatched = (Get-PluginPatchState -PluginRoot $sourcePluginRoot -ExpectedPatchVersion $patchVersion) -eq 'current'
+    $patchState = Get-PluginPatchState -PluginRoot $sourcePluginRoot -ExpectedPatchVersion $patchVersion
+    $alreadyPatched = $patchState -eq 'current'
     if ($alreadyPatched) {
         $pluginVersion = Get-PluginVersionFromJar -JarPath $runtimeJar
         $compat = Get-Content -LiteralPath (Join-Path $repoRoot "compatibility\$pluginVersion.json") -Raw | ConvertFrom-Json
         Assert-PatchedPluginIntegrity -PluginRoot $sourcePluginRoot -Compatibility $compat
+    }
+    if ($patchState -eq 'previous') {
+        $pluginVersion = Get-PluginVersionFromJar -JarPath $runtimeJar
+        $compat = Get-Content -LiteralPath (Join-Path $repoRoot "compatibility\$pluginVersion.json") -Raw | ConvertFrom-Json
+        $cleanBackup = Find-CleanPluginBackup -Compatibility $compat -BackupsRoot (Join-Path $repoRoot '.state\backups')
+        if (-not $cleanBackup) {
+            throw "No verified clean backup is available to upgrade the existing patch. Reinstall JetBrains AI, then run the installer again."
+        }
+        $stagingRoot = Join-Path $repoRoot '.build\clean-plugin-upgrade'
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+        Copy-Item -Path (Join-Path $installedPluginRoot '*') -Destination $stagingRoot -Recurse -Force
+        Restore-CleanPatchTargets -PluginRoot $stagingRoot -BackupRoot $cleanBackup -Compatibility $compat
+        $sourcePluginRoot = $stagingRoot
+        $runtimeJar = Join-Path $sourcePluginRoot 'lib\ml-llm.jar'
     }
     if (-not $alreadyPatched) {
         & (Join-Path $PSScriptRoot 'build.ps1') -PluginRoot $sourcePluginRoot -IdeHome $context.IdeHome -OutputRoot $patchedRoot
@@ -180,12 +274,21 @@ else {
             Select-Object -First 1 -ExpandProperty FullName) -Raw | ConvertFrom-Json
         foreach ($jar in @($compat.jars.runtime, $compat.jars.chat, $compat.jars.frontend)) {
             $relative = [string]$jar.path
-            $source = Join-Path $sourcePluginRoot $relative
+            $source = Join-Path $installedPluginRoot $relative
             $backup = Join-Path $backupRoot $relative
             New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
             Copy-Item -LiteralPath $source -Destination $backup
         }
-        Copy-PatchedJars -PatchedRoot $patchedRoot -PluginRoot $sourcePluginRoot
+        Copy-PatchedJars -PatchedRoot $patchedRoot -PluginRoot $installedPluginRoot
+    }
+}
+
+$historyCacheReport = $null
+if (-not $SkipHistoryCache) {
+    $historyCachePluginRoot = if ($mode -eq 'installed-plugin') { $context.PluginRoot } else { $sourcePluginRoot }
+    $historyCacheReport = Invoke-HistoryCachePreparation -PluginRoot $historyCachePluginRoot -Context $context
+    if ($historyCacheReport) {
+        $historyCacheReport | Out-Host
     }
 }
 
@@ -212,6 +315,7 @@ $state = [ordered]@{
     target = $targetPath
     backupRoot = $backupRoot
     backupAvailable = $null -ne (Get-ChildItem -LiteralPath $backupRoot -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+    historyCache = $historyCacheReport
     targetSha256 = if (Test-Path -LiteralPath $targetPath -PathType Leaf) {
         (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash
     } else { $null }

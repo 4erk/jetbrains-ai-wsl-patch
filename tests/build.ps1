@@ -15,6 +15,7 @@ $expected = @(
     @('lib\ml-llm.jar', 'com/intellij/ml/llm/agents/acp/process/CodexRuntimePatchSupport.class'),
     @('lib\modules\intellij.ml.llm.chat.jar', 'com/intellij/ml/llm/core/chat/ui/chat/CodexUsageLimitPatchSupport.class'),
     @('lib\modules\intellij.ml.llm.chat.jar', 'com/intellij/ml/llm/chat/session/SessionHistoryCheckpointPatchSupport.class'),
+    @('lib\modules\intellij.ml.llm.chat.jar', 'com/intellij/ml/llm/chat/session/SessionHistoryUiCachePatchSupport.class'),
     @('lib\modules\intellij.ml.llm.agents.frontend.jar', 'com/intellij/ml/llm/agents/frontend/compose/ui/components/utils/MarkdownWslLinkPatchSupport.class')
 )
 foreach ($item in $expected) {
@@ -44,6 +45,7 @@ $classpath = @(
     (Join-Path $PluginRoot 'lib\*')
     (Join-Path $PluginRoot 'lib\modules\*')
     (Join-Path $IdeHome 'lib\*')
+    (Join-Path $IdeHome 'lib\intellij.libraries.gson.jar')
 ) -join ';'
 $testArgs = Join-Path $repoRoot '.build\javac-test.args'
 [IO.File]::WriteAllLines($testArgs, @(
@@ -62,5 +64,9 @@ if ($LASTEXITCODE -ne 0) {
 & $java -cp "$testClasses;$classpath" com.intellij.ml.llm.chat.session.SessionHistoryCheckpointPatchSupportTest
 if ($LASTEXITCODE -ne 0) {
     throw "Session checkpoint policy tests failed with exit code $LASTEXITCODE"
+}
+& $java -cp "$testClasses;$classpath" com.intellij.ml.llm.chat.session.SessionHistoryUiCachePatchSupportTest
+if ($LASTEXITCODE -ne 0) {
+    throw "Session history UI cache tests failed with exit code $LASTEXITCODE"
 }
 Write-Output 'Build test passed.'

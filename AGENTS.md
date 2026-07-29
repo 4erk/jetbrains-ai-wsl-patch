@@ -2,7 +2,7 @@
 
 ## Scope
 
-This repository patches JetBrains AI only for environment-correct Codex runtime routing, WSL file navigation, Codex usage telemetry, bounded session-history checkpoints, and focused completion sound. Do not add licensing, netfilter, plugin synchronization, MCP configuration, model fallback, session resume/recovery, compaction, proxy, MTU, or IDE indexing behavior.
+This repository patches JetBrains AI only for environment-correct Codex runtime routing, WSL file navigation, Codex usage telemetry, bounded session-history persistence and UI replay, and focused completion sound. Do not add licensing, netfilter, plugin synchronization, MCP configuration, model fallback, server-side session resume/recovery, compaction, proxy, MTU, or IDE indexing behavior.
 
 ## Invariants
 
@@ -18,7 +18,9 @@ This repository patches JetBrains AI only for environment-correct Codex runtime 
 - Keep workstation migration baselines factual and dated. Never commit exported settings, plugin binaries, chat history, licenses, tokens, SSH keys, or Codex auth files.
 - Treat `account/rateLimits/read` as the usage-limit source of truth. Never scrape SQLite, WAL, text logs, or UI strings for current quota values.
 - Model quota windows and buckets dynamically from the app-server response. Do not assume that every plan has both 5-hour and weekly windows or hardcode a single special model.
-- Keep session history append-only. Bound only the pending in-memory batch; never truncate stored events or rewrite the full history on a periodic checkpoint.
+- Keep source session history append-only. Never truncate or rewrite `.events`.
+- UI history caches must remain derived, invalidating, atomic, bounded, disposable, and excluded from rollback/recovery. Any cache failure must fall back to the native reader.
+- Flush pending history only at an event-ID transition. An agent checkpoint is not a safe boundary for a streaming event.
 
 ## Update Workflow
 
@@ -32,4 +34,4 @@ This repository patches JetBrains AI only for environment-correct Codex runtime 
 
 ## Verification
 
-Internal PASS output is not enough. Confirm Windows and WSL executable versions, the WSL user and project path, a clickable absolute Linux file link, active-environment usage telemetry, incremental history persistence during a running task, and absence of plugin class-loading errors.
+Internal PASS output is not enough. Confirm Windows and WSL executable versions, the WSL user and project path, a clickable absolute Linux file link, project-bound usage telemetry, incremental history persistence, valid bounded caches for large chats, responsive history navigation, and absence of plugin class-loading errors.

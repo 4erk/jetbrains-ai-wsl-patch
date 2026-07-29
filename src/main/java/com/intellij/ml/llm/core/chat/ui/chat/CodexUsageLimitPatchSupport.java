@@ -101,7 +101,8 @@ public final class CodexUsageLimitPatchSupport {
             feedbackPanel.add(rightPanel);
         }
 
-        UsageButtonController controller = new UsageButtonController(limitButton, input);
+        Project project = ProjectUtil.getProjectForComponent(feedbackPanel);
+        UsageButtonController controller = new UsageButtonController(limitButton, input, project);
         limitButton.addActionListener(event -> controller.showPopup());
         limitButton.addHierarchyListener(event -> {
             if ((event.getChangeFlags() & HierarchyEvent.DISPLAYABILITY_CHANGED) == 0) {
@@ -125,18 +126,21 @@ public final class CodexUsageLimitPatchSupport {
     private static final class UsageButtonController {
         private final JButton button;
         private final AIAssistantInput input;
+        private volatile Project project;
         private volatile Snapshot snapshot = Snapshot.unavailable("Waiting for Codex rate-limit data.");
         private volatile ScheduledFuture<?> future;
 
-        private UsageButtonController(JButton button, AIAssistantInput input) {
+        private UsageButtonController(JButton button, AIAssistantInput input, Project project) {
             this.button = button;
             this.input = input;
+            this.project = project;
         }
 
         private synchronized void start() {
             if (future != null && !future.isCancelled() && !future.isDone()) {
                 return;
             }
+            resolveProject();
             future = EXECUTOR.scheduleAtFixedRate(this::refreshSafely, 0L, UI_REFRESH_MILLIS, TimeUnit.MILLISECONDS);
         }
 
@@ -153,11 +157,27 @@ public final class CodexUsageLimitPatchSupport {
 
         private void refreshSafely() {
             try {
+                Project ownerProject = project;
+                if (ownerProject == null || ownerProject.isDisposed()) {
+                    SwingUtilities.invokeLater(this::resolveProject);
+                    return;
+                }
                 String selectedModel = detectSelectedModel(input);
-                Snapshot next = loadSnapshot(selectedModel);
+                Snapshot next = loadSnapshot(selectedModel, ownerProject);
                 snapshot = next;
                 SwingUtilities.invokeLater(() -> applySnapshot(next));
             } catch (Throwable ignored) {
+            }
+        }
+
+        private void resolveProject() {
+            Project current = project;
+            if (current != null && !current.isDisposed()) {
+                return;
+            }
+            Project resolved = ProjectUtil.getProjectForComponent(button);
+            if (resolved != null && !resolved.isDisposed()) {
+                project = resolved;
             }
         }
 
@@ -278,8 +298,8 @@ public final class CodexUsageLimitPatchSupport {
         return color != null ? color.darker() : new Color(190, 55, 55);
     }
 
-    private static Snapshot loadSnapshot(String selectedModel) {
-        Path codexHome = activeCodexHome();
+    private static Snapshot loadSnapshot(String selectedModel, Project project) {
+        Path codexHome = activeCodexHome(project);
         if (codexHome == null) {
             return Snapshot.unavailable("The active Codex environment could not be resolved.").withModel(selectedModel);
         }
@@ -590,10 +610,10 @@ public final class CodexUsageLimitPatchSupport {
         }
     }
 
-    private static Path activeCodexHome() {
+    private static Path activeCodexHome(Project project) {
         String localAppData = System.getenv("LOCALAPPDATA");
         String selector = System.getProperty("idea.paths.selector", "unknown");
-        String distro = activeWslDistribution();
+        String distro = activeWslDistribution(project);
         if (isWindowsHost() && distro != null) {
             Map<String, String> runtime = loadRuntimeConfig(localAppData, selector);
             String prefix = "WSL_" + configKey(distro) + "_";
@@ -609,10 +629,9 @@ public final class CodexUsageLimitPatchSupport {
         return Path.of(localAppData, "JetBrains", selector, "aia", "codex");
     }
 
-    private static String activeWslDistribution() {
+    private static String activeWslDistribution(Project project) {
         try {
-            Project project = ProjectUtil.getActiveProject();
-            String path = project == null ? null : project.getBasePath();
+            String path = project == null || project.isDisposed() ? null : project.getBasePath();
             if (path == null || path.isBlank()) {
                 return null;
             }

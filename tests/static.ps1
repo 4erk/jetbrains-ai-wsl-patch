@@ -91,6 +91,7 @@ Assert-True ($sourceText.IndexOf('return if (', [StringComparison]::OrdinalIgnor
 Assert-True ($sourceText.IndexOf('logs_2.sqlite', [StringComparison]::OrdinalIgnoreCase) -lt 0) 'SQLite telemetry scraping is still referenced by source.'
 Assert-True ($sourceText.IndexOf('account/rateLimits/read', [StringComparison]::Ordinal) -ge 0) 'App-server rate-limit RPC is not referenced by source.'
 Assert-True ($sourceText.IndexOf('SessionHistoryCheckpointPatchSupport', [StringComparison]::Ordinal) -ge 0) 'Session history checkpoint helper is not referenced by source.'
+Assert-True ($sourceText.IndexOf('SessionHistoryUiCachePatchSupport', [StringComparison]::Ordinal) -ge 0) 'Session history UI cache helper is not referenced by source.'
 
 $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw).Trim()
 Assert-True ($version -match '^\d+\.\d+\.\d+$') "VERSION is not semantic: $version"

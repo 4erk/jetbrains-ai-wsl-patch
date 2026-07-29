@@ -31,15 +31,6 @@ public final class SessionHistoryCheckpointPatchSupport {
         }
     }
 
-    public static void afterCheckpoint(
-        SessionHistoryStorage storage,
-        SessionHistoryStorage.PersistanceId sessionId
-    ) {
-        if (storage != null && sessionId != null && shouldFlushAtCheckpoint(sessionId.getId(), System.nanoTime())) {
-            storage.flush(sessionId);
-        }
-    }
-
     public static void onFlush(SessionHistoryStorage.PersistanceId sessionId) {
         if (sessionId != null) {
             onFlushForTest(sessionId.getId());
@@ -58,19 +49,6 @@ public final class SessionHistoryCheckpointPatchSupport {
             }
             state.lastEventId = eventId;
             return false;
-        }
-    }
-
-    static boolean shouldFlushAtCheckpoint(String sessionId, long nowNanos) {
-        DirtyState state = DIRTY_STATES.computeIfAbsent(sessionId, ignored -> new DirtyState(nowNanos, -1));
-        synchronized (state) {
-            state.recordCount++;
-            boolean due = state.recordCount >= MAX_PENDING_RECORDS
-                || nowNanos - state.startedAtNanos >= MAX_DIRTY_NANOS;
-            if (due) {
-                DIRTY_STATES.remove(sessionId, state);
-            }
-            return due;
         }
     }
 

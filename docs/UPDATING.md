@@ -40,7 +40,7 @@
 - при необходимости обновите `runtime.lock.json` отдельной командой;
 - не добавляйте plugin ZIP, JAR, runtime downloads или `.state`.
 
-Release tag имеет форму `jbai-<plugin-version>-patch-<patch-version>`, например `jbai-261.25134.237-patch-1.2.0`. После успешной live-проверки commit и tag публикуются командой `scripts/release.ps1`.
+Release tag имеет форму `jbai-<plugin-version>-patch-<patch-version>`, например `jbai-261.25134.237-patch-1.3.0`. После успешной live-проверки commit и tag публикуются командой `scripts/release.ps1`.
 
 ## 5. Установить и проверить
 
@@ -52,6 +52,7 @@ Release tag имеет форму `jbai-<plugin-version>-patch-<patch-version>`,
 4. В `idea.log` нет Windows command для WSL ACP launch.
 5. Ссылка `/home/.../file` открывает WSL VirtualFile.
 6. `jetbrains-rate-limits.json` обновляется не реже чем раз в 20 секунд, stale SQLite values не используются, bucket меняется вместе с выбранной моделью.
-7. В логе нет `NoClassDefFoundError`, `VerifyError` или plugin load errors.
+7. `scripts/status.ps1` показывает valid UI caches для больших `.events`, а переход между длинными чатами не загружает полный tool payload.
+8. В логе нет `NoClassDefFoundError`, `VerifyError` или plugin load errors.
 
 Только после фактической проверки создавайте release tag.

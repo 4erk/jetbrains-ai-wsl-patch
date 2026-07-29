@@ -6,7 +6,7 @@
 
 - `ml-llm.jar`: нормализация `AcpAgentStartConfig` непосредственно перед `AcpProcessLauncher.startProcess`;
 - `intellij.ml.llm.agents.frontend.jar`: открытие Linux absolute paths через WSL VFS;
-- `intellij.ml.llm.chat.jar`: usage-limit control, bounded session-history checkpoints и звук завершения при активном окне.
+- `intellij.ml.llm.chat.jar`: project-bound usage-limit control, bounded session-history checkpoints, long-chat UI cache и звук завершения при активном окне.
 
 Каждый patcher проверяет конкретный class/method/call shape и завершает сборку с ошибкой, если hook отсутствует или неоднозначен. Compatibility manifest дополнительно фиксирует чистые SHA-256 всех трёх JAR.
 
@@ -40,13 +40,27 @@ Manifest содержит Windows paths и набор WSL paths с ключом,
 
 ACP bridge использует стабильный app-server RPC `account/rateLimits/read`. Сразу после ACP `initialize` и далее каждые 20 секунд он сохраняет валидный response в `jetbrains-rate-limits.json` активного `CODEX_HOME`. Предыдущее валидное поколение хранится в `jetbrains-rate-limits.json.last-good`; пустой response не меняет оба файла, а partial response объединяется с известными buckets. Трансформация `codex-acp` привязана к clean/patched SHA-256 в `runtime.lock.json` и останавливается при неизвестном bundle.
 
-Java UI читает самое новое валидное поколение из Codex home активной project environment. Windows и WSL telemetry не смешиваются. Snapshot старше 75 секунд помечается как stale, но его проценты остаются видимыми как last-known data. Окна сортируются по `windowDurationMins`; именованные buckets сопоставляются с выбранной моделью по `limitName`, default bucket определяется по `limitId=codex`. SQLite/WAL не является API и больше не используется.
+Java UI сохраняет ссылку на owning `Project` при создании chat panel и читает самое новое валидное поколение из Codex home именно этого project environment. Смена фокуса между Windows- и WSL-окнами не меняет источник telemetry уже созданной кнопки. Snapshot старше 75 секунд помечается как stale, но его проценты остаются видимыми как last-known data. Окна сортируются по `windowDurationMins`; именованные buckets сопоставляются с выбранной моделью по `limitName`, default bucket определяется по `limitId=codex`. SQLite/WAL не является API и больше не используется.
 
 ## Session history checkpoints
 
-JetBrains `SessionHistoryStorage` собирает события активной задачи в памяти и штатно append-записывает их перед стартом и после завершения задачи. Patch hook вызывает тот же `flush` синхронно из последовательного event pipeline после 30 секунд dirty-state или 256 обновлений на следующей границе `eventId`; agent checkpoint также считается безопасной границей. Это не создаёт повторных IDs при разрезании потокового Markdown/terminal block. После append штатный pending batch удаляется.
+JetBrains `SessionHistoryStorage` собирает события активной задачи в памяти и штатно append-записывает их перед стартом и после завершения задачи. Patch hook вызывает тот же `flush` синхронно из последовательного event pipeline после 30 секунд dirty-state или 256 обновлений только на следующей границе `eventId`. Agent checkpoint не является безопасной границей: он может приходить посреди обновлений того же terminal/diff block, поэтому flush на checkpoint запрещён. После успешного штатного append pending batch удаляется.
 
-Checkpoint не запускает фонового таймера, не работает при отсутствии новых событий, не копирует существующий `.events` и не меняет формат истории. Полный журнал остаётся доступен штатному reader. Уже отображённая frontend-модель длинного чата не выгружается: её безопасное ограничение требует отдельного протокола pagination/load-older, а не удаления событий из backend history.
+Checkpoint не запускает фонового таймера, не работает при отсутствии новых событий и не меняет формат истории.
+
+## Long-chat UI cache
+
+`FrontendSessionBase.getEventsFlow` является единственной пропатченной точкой чтения производного кэша. Rollback, поиск событий и `SessionHistoryStorage.getEvents` продолжают читать исходный `.events`.
+
+Для source больше 8 МБ helper делает два последовательных прохода без загрузки raw-файла в heap. Кэш:
+
+- выбирает последнее persisted состояние каждого event ID и объединяет Markdown chunks по штатному правилу JetBrains;
+- сохраняет все user prompts, весь assistant Markdown, result events и последние 600 событий;
+- не создаёт frontend-компоненты для старых thought/terminal/MCP/file-change/tool details;
+- ограничивает крупные строки terminal/result/diff только в UI-представлении;
+- содержит явный marker с путём к полному append-only source.
+
+Файл `<session>.ui-cache-v2` привязан к размеру и `mtime` source, записывается через temporary file и atomic replace, валидируется штатным serializer и удаляется вместе с сессией. Ошибка создания или чтения приводит к native reader fallback. Исходный `.events` никогда не обрезается и остаётся единственным источником для восстановления.
 
 ## Supply chain
 
